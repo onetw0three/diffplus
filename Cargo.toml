@@ -1,0 +1,28 @@
+[package]
+name = "artifact-diff"
+version = "0.1.0"
+edition = "2021"
+description = "Compare the semantic contents of software artifacts"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+flate2 = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = { version = "0.10", features = ["asm"] }
+tar = "0.4"
+tempfile = "3"
+unified-diff = "0.2"
+zip = "2"
+bzip2 = "0.5"
+xz2 = "0.1"
+ratatui = { version = "0.30", default-features = false, features = ["crossterm_0_29"] }
+crossterm = "0.29"
+similar = "3"
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
