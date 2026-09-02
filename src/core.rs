@@ -467,6 +467,8 @@ pub(crate) fn run_native_diff(
         );
     }
     let args = Args {
+        config: None,
+        no_config: true,
         old: Some(old_blob.to_path_buf()),
         new: Some(new_blob.to_path_buf()),
         view: None,

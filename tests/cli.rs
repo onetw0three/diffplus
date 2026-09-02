@@ -238,6 +238,60 @@ fn fatal_input_error_uses_exit_two() {
 }
 
 #[test]
+fn explicit_config_supplies_defaults_and_cli_overrides_them() {
+    let (temp, old, new) = fixture();
+    fs::write(old.join("value.txt"), "old\n").unwrap();
+    fs::write(new.join("value.txt"), "new\n").unwrap();
+    let configured_output = temp.path().join("configured-result");
+    let cli_output = temp.path().join("cli-result");
+    let config = temp.path().join("config.toml");
+    fs::write(
+        &config,
+        format!(
+            "output = {:?}\njvm = 'raw'\nmax_depth = 1\n",
+            configured_output
+        ),
+    )
+    .unwrap();
+
+    Command::cargo_bin("artifact-diff")
+        .unwrap()
+        .arg("--config")
+        .arg(&config)
+        .arg(&old)
+        .arg(&new)
+        .assert()
+        .code(1);
+    assert!(configured_output.join("manifest.json").is_file());
+
+    Command::cargo_bin("artifact-diff")
+        .unwrap()
+        .arg("--config")
+        .arg(&config)
+        .arg("--output")
+        .arg(&cli_output)
+        .arg(&old)
+        .arg(&new)
+        .assert()
+        .code(1);
+    assert!(cli_output.join("manifest.json").is_file());
+}
+
+#[test]
+fn explicit_missing_config_is_an_error() {
+    let (temp, old, new) = fixture();
+    Command::cargo_bin("artifact-diff")
+        .unwrap()
+        .arg("--config")
+        .arg(temp.path().join("missing.toml"))
+        .arg(&old)
+        .arg(&new)
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains("configuration file not found"));
+}
+
+#[test]
 fn view_mode_does_not_require_input_artifacts() {
     let temp = tempfile::tempdir().unwrap();
     Command::cargo_bin("artifact-diff")

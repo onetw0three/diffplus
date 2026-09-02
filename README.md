@@ -6,6 +6,7 @@ Rust-first comparison of software artifacts by their semantic contents.
 
 - `src/main.rs` is the process entry point.
 - `src/cli.rs` owns command-line configuration and analyzer modes.
+- `src/config.rs` loads typed user defaults and applies CLI precedence.
 - `src/model.rs` owns artifact entries and the versioned manifest model.
 - `src/core.rs` orchestrates bounded scanning and analyzer selection.
 - `src/diff.rs` produces deterministic manifests and unified diffs.
@@ -109,6 +110,39 @@ JADX discovery searches `PATH`, `$JADX_HOME/bin/jadx`,
 
 Exit codes are `0` for no differences, `1` when differences are found, and `2`
 for fatal input or analyzer errors.
+
+## Configuration
+
+Persistent defaults can be stored in
+`$XDG_CONFIG_HOME/artifact-diff/config.toml`, or
+`~/.config/artifact-diff/config.toml` when `XDG_CONFIG_HOME` is unset. For
+example:
+
+```toml
+output = "result"
+context = 3
+max_file_size = 104857600
+max_expanded_size = 2147483648
+max_depth = 1
+
+jvm = "raw"
+jadx_path = "/opt/jadx/bin/jadx"
+
+native = "auto"
+ida_path = "/opt/ida/ida64"
+diaphora_path = "~/tools/diaphora"
+diaphora_script = "~/src/diffplus/ida/scripts/diaphora_adapter.py"
+python_path = "python3"
+
+cache_dir = "~/.cache/artifact-diff"
+workspace_dir = "/tmp/artifact-diff"
+```
+
+All fields are optional. Command-line arguments override configured values.
+Paths beginning with `~/` are expanded using the home directory. Use
+`--config FILE` to select another file or `--no-config` for a fully isolated
+run. Misspelled or unsupported keys are reported as errors instead of being
+silently ignored.
 
 Progress is written to stderr by default, including input phases, TAR/ZIP member
 counts, analyzer output, 30-second subprocess heartbeats, cache activity, and

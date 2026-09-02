@@ -1,4 +1,5 @@
-use clap::{Parser, ValueEnum};
+use anyhow::Result;
+use clap::{CommandFactory, FromArgMatches, Parser, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -8,6 +9,12 @@ use std::path::PathBuf;
     about = "Compare directories and archives by semantic file contents"
 )]
 pub struct Args {
+    /// Read defaults from this TOML file instead of the standard user config.
+    #[arg(long, value_name = "FILE", conflicts_with = "no_config")]
+    pub config: Option<PathBuf>,
+    /// Do not read the standard user configuration file.
+    #[arg(long)]
+    pub no_config: bool,
     /// Original input. Required unless --view is used.
     #[arg(required_unless_present = "view")]
     pub old: Option<PathBuf>,
@@ -65,6 +72,13 @@ pub struct Args {
 }
 
 impl Args {
+    pub fn parse_configured() -> Result<Self> {
+        let matches = Self::command().get_matches();
+        let mut args = Self::from_arg_matches(&matches)?;
+        crate::config::merge(&mut args, &matches)?;
+        Ok(args)
+    }
+
     pub(crate) fn old_input(&self) -> &std::path::Path {
         self.old
             .as_deref()
@@ -78,14 +92,16 @@ impl Args {
     }
 }
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
+#[derive(Clone, Copy, Debug, serde::Deserialize, ValueEnum)]
+#[serde(rename_all = "snake_case")]
 pub enum Color {
     Auto,
     Always,
     Never,
 }
 
-#[derive(Clone, Debug, ValueEnum)]
+#[derive(Clone, Debug, serde::Deserialize, ValueEnum)]
+#[serde(rename_all = "snake_case")]
 pub enum JvmMode {
     Auto,
     Jadx,
@@ -93,7 +109,8 @@ pub enum JvmMode {
     Off,
 }
 
-#[derive(Clone, Debug, ValueEnum)]
+#[derive(Clone, Debug, serde::Deserialize, ValueEnum)]
+#[serde(rename_all = "snake_case")]
 pub enum NativeMode {
     Auto,
     Ida,
