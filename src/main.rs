@@ -3,6 +3,7 @@ mod cli;
 mod config;
 mod core;
 mod diff;
+mod mcp;
 mod model;
 mod native;
 mod output;
@@ -19,6 +20,13 @@ fn main() {
             std::process::exit(2);
         }
     };
+    if args.mcp {
+        if let Err(error) = mcp::run(args) {
+            eprintln!("{error:#}");
+            std::process::exit(2);
+        }
+        return;
+    }
     let analyzer_options = tui::AnalyzerOptions::from_args(&args);
     if let Some(result) = &args.view {
         if let Err(error) = tui::run(result, analyzer_options) {

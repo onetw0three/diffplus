@@ -292,6 +292,96 @@ fn explicit_missing_config_is_an_error() {
 }
 
 #[test]
+fn mcp_server_compares_lists_and_reads_diffs_without_stdout_noise() {
+    let (temp, old, new) = fixture();
+    fs::write(old.join("value.txt"), "before\n").unwrap();
+    fs::write(new.join("value.txt"), "after\n").unwrap();
+    let output = temp.path().join("mcp-result");
+    let requests = [
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": { "name": "test", "version": "1" }
+            }
+        }),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized"
+        }),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "compare_artifacts",
+                "arguments": {
+                    "old_path": old,
+                    "new_path": new,
+                    "output_path": output
+                }
+            }
+        }),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "list_changes",
+                "arguments": { "result_path": output }
+            }
+        }),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "read_diff",
+                "arguments": {
+                    "result_path": output,
+                    "path": "value.txt"
+                }
+            }
+        }),
+    ]
+    .into_iter()
+    .map(|request| request.to_string())
+    .collect::<Vec<_>>()
+    .join("\n")
+        + "\n";
+
+    let assertion = Command::cargo_bin("diffplus")
+        .unwrap()
+        .args(["--mcp", "--no-config", "--jvm", "raw"])
+        .write_stdin(requests)
+        .assert()
+        .success();
+    let responses: Vec<serde_json::Value> =
+        String::from_utf8(assertion.get_output().stdout.clone())
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+
+    assert_eq!(responses.len(), 4);
+    assert_eq!(
+        responses[1]["result"]["structuredContent"]["change_count"],
+        1
+    );
+    assert_eq!(
+        responses[2]["result"]["structuredContent"]["entries"][0]["path"],
+        "value.txt"
+    );
+    assert!(responses[3]["result"]["structuredContent"]["diff"]
+        .as_str()
+        .unwrap()
+        .contains("-before"));
+}
+
+#[test]
 fn view_mode_does_not_require_input_artifacts() {
     let temp = tempfile::tempdir().unwrap();
     Command::cargo_bin("diffplus")

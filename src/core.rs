@@ -31,6 +31,14 @@ struct JadxOptions<'a> {
 }
 
 pub fn run(args: Args) -> Result<bool> {
+    run_with_summary(args, true)
+}
+
+pub(crate) fn run_for_mcp(args: Args) -> Result<bool> {
+    run_with_summary(args, false)
+}
+
+fn run_with_summary(args: Args, emit_summary: bool) -> Result<bool> {
     crate::progress::set_enabled(!args.quiet);
     let old_path = args.old_input();
     let new_path = args.new_input();
@@ -81,7 +89,7 @@ pub fn run(args: Args) -> Result<bool> {
         if let Some(((ida, script), diaphora)) =
             native_config.filter(|_| !matches!(args.native, NativeMode::Raw | NativeMode::Off))
         {
-            return run_native_comparison(&args, ida, script, diaphora);
+            return run_native_comparison(&args, ida, script, diaphora, emit_summary);
         }
         if matches!(args.native, NativeMode::Ida) {
             bail!("native analysis was requested but IDA configuration is incomplete");
@@ -183,7 +191,9 @@ pub fn run(args: Args) -> Result<bool> {
     let (manifest, summary) = compare(&old, &new, output.path(), args.context)?;
     crate::output::write_results(output.path(), &manifest, &summary)?;
     output.commit()?;
-    print_summary(&render_summary(&old, &new, &manifest.stats), args.color);
+    if emit_summary {
+        print_summary(&render_summary(&old, &new, &manifest.stats), args.color);
+    }
     Ok(manifest.stats.added
         + manifest.stats.deleted
         + manifest.stats.modified
@@ -323,8 +333,14 @@ fn hash_file_pair(old: &Path, new: &Path) -> Result<(String, String)> {
     Ok((sha_file(old)?, sha_file(new)?))
 }
 
-fn run_native_comparison(args: &Args, ida: &Path, script: &Path, diaphora: &Path) -> Result<bool> {
-    run_native_comparison_named(args, ida, script, diaphora, None, true)
+fn run_native_comparison(
+    args: &Args,
+    ida: &Path,
+    script: &Path,
+    diaphora: &Path,
+    emit_summary: bool,
+) -> Result<bool> {
+    run_native_comparison_named(args, ida, script, diaphora, None, emit_summary)
 }
 
 fn run_native_comparison_named(
@@ -469,6 +485,7 @@ pub(crate) fn run_native_diff(
     let args = Args {
         config: None,
         no_config: true,
+        mcp: false,
         old: Some(old_blob.to_path_buf()),
         new: Some(new_blob.to_path_buf()),
         view: None,

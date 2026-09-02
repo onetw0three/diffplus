@@ -144,6 +144,43 @@ Paths beginning with `~/` are expanded using the home directory. Use
 run. Misspelled or unsupported keys are reported as errors instead of being
 silently ignored.
 
+## MCP server
+
+Run `diffplus` as a local stdio Model Context Protocol server:
+
+```bash
+target/release/diffplus --mcp
+```
+
+An MCP host can register it with a configuration shaped like:
+
+```json
+{
+  "mcpServers": {
+    "diffplus": {
+      "command": "/absolute/path/to/diffplus",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
+The server loads the normal `diffplus` configuration, so analyzer paths and
+resource limits do not need to be repeated in the MCP host configuration. It
+exposes:
+
+- `compare_artifacts`: compare local files, directories, or archives and write
+  a result directory.
+- `list_changes`: page and filter the generated manifest.
+- `read_diff`: retrieve one bounded unified diff by logical path.
+
+`compare_artifacts` requires an explicit output path and transactionally
+replaces that directory. Its MCP metadata therefore marks it as destructive;
+the two result-reading tools are marked read-only. Tool responses are bounded,
+unknown arguments are rejected, and saved diff paths are checked against
+directory traversal and symlink escapes. Both the modern MCP 2026-07-28
+stateless lifecycle and the legacy 2025 initialization lifecycle are supported.
+
 Progress is written to stderr by default, including input phases, TAR/ZIP member
 counts, analyzer output, 30-second subprocess heartbeats, cache activity, and
 IDA/Diaphora stages. Pass `--quiet` to

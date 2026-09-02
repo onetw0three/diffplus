@@ -1026,7 +1026,19 @@ Add:
 -   large archive testing
 -   malformed input fuzzing where practical
 
-### Phase 7 --- Web UI
+### Phase 7 --- Agent Integration
+
+Expose a bounded stdio MCP server that reuses the CLI configuration and result
+contract. Agents should be able to:
+
+-   compare two local artifacts into an explicit output directory
+-   page and filter changed manifest entries
+-   retrieve individual unified diffs without loading an entire result
+
+Keep protocol output isolated on stdout, send progress to stderr, advertise
+destructive operations accurately, and validate persisted result paths.
+
+### Phase 8 --- Web UI
 
 Build the Web UI against the versioned manifest/output contract.
 

@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::{CommandFactory, FromArgMatches, Parser, ValueEnum};
 use std::path::PathBuf;
 
-#[derive(Parser, Debug)]
+#[derive(Clone, Parser, Debug)]
 #[command(
     name = "diffplus",
     version,
@@ -15,11 +15,14 @@ pub struct Args {
     /// Do not read the standard user configuration file.
     #[arg(long)]
     pub no_config: bool,
-    /// Original input. Required unless --view is used.
-    #[arg(required_unless_present = "view")]
+    /// Run a Model Context Protocol server over stdin/stdout.
+    #[arg(long, conflicts_with_all = ["old", "new", "view", "tui"])]
+    pub mcp: bool,
+    /// Original input. Required unless --view or --mcp is used.
+    #[arg(required_unless_present_any = ["view", "mcp"])]
     pub old: Option<PathBuf>,
-    /// New input. Required unless --view is used.
-    #[arg(required_unless_present = "view")]
+    /// New input. Required unless --view or --mcp is used.
+    #[arg(required_unless_present_any = ["view", "mcp"])]
     pub new: Option<PathBuf>,
     /// Open an existing result directory in the terminal UI.
     #[arg(long, value_name = "RESULT", conflicts_with_all = ["old", "new"])]
