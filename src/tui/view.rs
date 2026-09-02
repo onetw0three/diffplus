@@ -167,9 +167,11 @@ fn render_editor(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .constraints([Constraint::Length(3), Constraint::Min(3)])
         .split(area);
     let selected = app.selected_entry();
-    let mode = match app.mode {
-        ViewMode::SideBySide => "SIDE BY SIDE",
-        ViewMode::Unified => "UNIFIED",
+    let mode = match (app.showing_jadx_diff(), app.mode) {
+        (true, ViewMode::SideBySide) => "JADX · CONSOLIDATED · SIDE BY SIDE",
+        (true, ViewMode::Unified) => "JADX · CONSOLIDATED · UNIFIED",
+        (false, ViewMode::SideBySide) => "SIDE BY SIDE",
+        (false, ViewMode::Unified) => "UNIFIED",
     };
     let metadata = selected.map_or_else(
         || vec![Line::raw("No file selected")],
@@ -271,7 +273,9 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let default_text = if app.analyzing {
         " JADX is analyzing the selected JAR… "
     } else if app.has_parent() {
-        " Backspace parent  q quit  / search  wheel/PgUp/PgDn/J/K scroll  Tab view  1–4 filters "
+        " Backspace parent JAR  q quit  / search  wheel/PgUp/PgDn/J/K scroll  Tab view "
+    } else if app.showing_jadx_diff() {
+        " Enter JAR details  q quit  wheel/PgUp/PgDn/J/K scroll  Tab view "
     } else {
         " q quit  / search  Enter JAR diff  Space folder  wheel/PgUp/PgDn/J/K scroll  Tab view  1–4 filters "
     };

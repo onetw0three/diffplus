@@ -64,8 +64,10 @@ toggle a selected folder, and the mouse wheel, `PageUp`/`PageDown`, or `J`/`K`
 to scroll diffs. Mouse clicks select files and toggle folders. Drag the
 Explorer/editor or before/after vertical divider to resize those panels. Use
 `[`/`]` to pan, `Tab` to switch views, and `1`–`4` to toggle status classes.
-Press `Backspace` to return from a generated JADX source comparison. The editor
-header shows before/after paths and sizes.
+Once generated, a JADX comparison is consolidated into the selected JAR's
+existing diff pane. Press `Enter` to open its per-file child explorer and
+`Backspace` to return to the consolidated parent view. The editor header shows
+before/after paths and sizes.
 
 Rename detection first pairs unique identical-content moves, then unique paths
 after normalizing semantic versions and long build numbers. Ambiguous groups

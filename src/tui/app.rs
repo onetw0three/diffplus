@@ -10,6 +10,7 @@ use std::{
 };
 
 const MAX_VIEW_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_CONSOLIDATED_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum ViewMode {
@@ -95,6 +96,7 @@ pub(super) struct App {
     pub(super) horizontal_scroll: u16,
     pub(super) content: Content,
     pub(super) error: Option<String>,
+    active_jadx: Option<PathBuf>,
     parents: Vec<PathBuf>,
     pending_jadx: Option<JadxRequest>,
     pub(super) analyzing: bool,
@@ -129,6 +131,7 @@ impl App {
             horizontal_scroll: 0,
             content: Content::Message(String::new()),
             error: None,
+            active_jadx: None,
             parents: Vec::new(),
             pending_jadx: None,
             analyzing: false,
@@ -250,6 +253,10 @@ impl App {
         }
     }
 
+    pub(super) fn showing_jadx_diff(&self) -> bool {
+        self.active_jadx.is_some()
+    }
+
     pub(super) fn has_parent(&self) -> bool {
         !self.parents.is_empty()
     }
@@ -366,6 +373,7 @@ impl App {
             return;
         };
         if node.directory {
+            self.active_jadx = None;
             if !collapse_only && self.collapsed.remove(&node.path) {
                 // Right/Enter toggles a collapsed directory open.
             } else {
@@ -408,15 +416,7 @@ impl App {
             return Ok(());
         };
 
-        let key = crate::scan::sha(
-            format!(
-                "jadx-tui-v1\n{}\n{}\n",
-                entry.old_sha256.as_deref().unwrap_or("missing"),
-                entry.new_sha256.as_deref().unwrap_or("missing")
-            )
-            .as_bytes(),
-        );
-        let output = self.result.join(".analysis/jadx").join(key);
+        let output = jadx_output_path(&self.result, entry);
         if output.join("manifest.json").is_file() {
             return self.open_child(&output);
         }
@@ -471,12 +471,33 @@ impl App {
     }
 
     fn reset_view(&mut self) {
+        self.active_jadx = None;
         self.vertical_scroll = 0;
         self.horizontal_scroll = 0;
         self.error = None;
     }
 
     fn refresh_content(&mut self) {
+        if self.active_jadx.is_none() {
+            self.active_jadx = self.cached_jadx_result();
+        }
+        if let Some(result) = self.active_jadx.as_deref() {
+            let loaded = match self.mode {
+                ViewMode::SideBySide => load_consolidated_side_by_side(result),
+                ViewMode::Unified => load_consolidated_unified(result),
+            };
+            match loaded {
+                Ok(content) => {
+                    self.content = content;
+                    self.error = None;
+                }
+                Err(error) => {
+                    self.content = Content::Message("Unable to display the JADX diff.".into());
+                    self.error = Some(format!("{error:#}"));
+                }
+            }
+            return;
+        }
         let Some(entry_index) = self
             .visible_nodes()
             .get(self.selected)
@@ -500,6 +521,17 @@ impl App {
                 self.error = Some(format!("{error:#}"));
             }
         }
+    }
+
+    fn cached_jadx_result(&self) -> Option<PathBuf> {
+        let entry = self.selected_entry()?;
+        let old_path = entry.old_path.as_deref().unwrap_or(&entry.path);
+        let new_path = entry.new_path.as_deref().unwrap_or(&entry.path);
+        if !is_jar_path(old_path) && !is_jar_path(new_path) {
+            return None;
+        }
+        let result = jadx_output_path(&self.result, entry);
+        result.join("manifest.json").is_file().then_some(result)
     }
 
     fn load_side_by_side(&self, entry: &ManifestEntry) -> Result<Content> {
@@ -542,38 +574,160 @@ impl App {
     }
 
     fn read_relative(&self, relative: &str) -> Result<String> {
-        let resolved = self.resolve_relative(relative)?;
-        let size = std::fs::metadata(&resolved)?.len();
-        if size > MAX_VIEW_BYTES {
-            bail!(
-                "{} is {} MiB; the viewer limit is {} MiB",
-                resolved.display(),
-                size / 1024 / 1024,
-                MAX_VIEW_BYTES / 1024 / 1024
-            );
-        }
-        let bytes = std::fs::read(&resolved)?;
-        Ok(String::from_utf8_lossy(&bytes).into_owned())
+        read_relative_from(&self.result, relative)
     }
 
     fn resolve_relative(&self, relative: &str) -> Result<PathBuf> {
-        let relative = Path::new(relative);
-        if relative.is_absolute()
-            || relative
-                .components()
-                .any(|part| matches!(part, Component::ParentDir | Component::Prefix(_)))
-        {
-            bail!("unsafe result path: {}", relative.display());
-        }
-        let path = self.result.join(relative);
-        let root = std::fs::canonicalize(&self.result)?;
-        let resolved = std::fs::canonicalize(&path)
-            .with_context(|| format!("resolving {}", path.display()))?;
-        if !resolved.starts_with(root) {
-            bail!("result path escapes its directory: {}", path.display());
-        }
-        Ok(resolved)
+        resolve_relative_from(&self.result, relative)
     }
+}
+
+fn load_consolidated_side_by_side(result: &Path) -> Result<Content> {
+    let manifest = load_manifest(result)?;
+    let mut rows = Vec::new();
+    let mut total_bytes = 0;
+    for entry in manifest
+        .entries
+        .iter()
+        .filter(|entry| entry.status != "unchanged" && entry.kind == "text")
+    {
+        let old = read_optional_from(result, entry.old_content.as_deref())?;
+        let new = read_optional_from(result, entry.new_content.as_deref())?;
+        total_bytes += old.len() + new.len();
+        if total_bytes > MAX_CONSOLIDATED_BYTES {
+            bail!("consolidated JADX diff exceeds 64 MiB");
+        }
+        rows.push(DiffRow {
+            old: DiffCell {
+                number: None,
+                text: format!("--- {}", entry.old_path.as_deref().unwrap_or("/dev/null")),
+                kind: RowKind::Header,
+            },
+            new: DiffCell {
+                number: None,
+                text: format!("+++ {}", entry.new_path.as_deref().unwrap_or("/dev/null")),
+                kind: RowKind::Header,
+            },
+        });
+        rows.extend(aligned_diff(&old, &new));
+        rows.push(blank_diff_row());
+    }
+    if rows.is_empty() {
+        Ok(Content::Message(
+            "JADX found no changed source files in this JAR pair.".into(),
+        ))
+    } else {
+        Ok(Content::SideBySide(rows))
+    }
+}
+
+fn load_consolidated_unified(result: &Path) -> Result<Content> {
+    let manifest = load_manifest(result)?;
+    let mut lines = Vec::new();
+    let mut total_bytes = 0;
+    for entry in manifest
+        .entries
+        .iter()
+        .filter(|entry| entry.status != "unchanged")
+    {
+        let Some(diff) = entry.diff.as_deref() else {
+            continue;
+        };
+        let text = read_relative_from(result, diff)?;
+        total_bytes += text.len();
+        if total_bytes > MAX_CONSOLIDATED_BYTES {
+            bail!("consolidated JADX diff exceeds 64 MiB");
+        }
+        lines.extend(text.lines().map(|line| UnifiedLine {
+            kind: classify_unified(line),
+            text: line.to_owned(),
+        }));
+        lines.push(UnifiedLine {
+            text: String::new(),
+            kind: RowKind::Equal,
+        });
+    }
+    if lines.is_empty() {
+        Ok(Content::Message(
+            "JADX found no changed source files in this JAR pair.".into(),
+        ))
+    } else {
+        Ok(Content::Unified(lines))
+    }
+}
+
+fn load_manifest(result: &Path) -> Result<Manifest> {
+    let path = result.join("manifest.json");
+    let bytes = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+    serde_json::from_slice(&bytes).with_context(|| format!("parsing {}", path.display()))
+}
+
+fn read_optional_from(result: &Path, relative: Option<&str>) -> Result<String> {
+    relative.map_or_else(
+        || Ok(String::new()),
+        |path| read_relative_from(result, path),
+    )
+}
+
+fn read_relative_from(result: &Path, relative: &str) -> Result<String> {
+    let resolved = resolve_relative_from(result, relative)?;
+    let size = std::fs::metadata(&resolved)?.len();
+    if size > MAX_VIEW_BYTES {
+        bail!(
+            "{} is {} MiB; the viewer limit is {} MiB",
+            resolved.display(),
+            size / 1024 / 1024,
+            MAX_VIEW_BYTES / 1024 / 1024
+        );
+    }
+    let bytes = std::fs::read(&resolved)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn resolve_relative_from(result: &Path, relative: &str) -> Result<PathBuf> {
+    let relative = Path::new(relative);
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|part| matches!(part, Component::ParentDir | Component::Prefix(_)))
+    {
+        bail!("unsafe result path: {}", relative.display());
+    }
+    let path = result.join(relative);
+    let root = std::fs::canonicalize(result)?;
+    let resolved =
+        std::fs::canonicalize(&path).with_context(|| format!("resolving {}", path.display()))?;
+    if !resolved.starts_with(root) {
+        bail!("result path escapes its directory: {}", path.display());
+    }
+    Ok(resolved)
+}
+
+fn blank_diff_row() -> DiffRow {
+    DiffRow {
+        old: DiffCell {
+            number: None,
+            text: String::new(),
+            kind: RowKind::Equal,
+        },
+        new: DiffCell {
+            number: None,
+            text: String::new(),
+            kind: RowKind::Equal,
+        },
+    }
+}
+
+fn jadx_output_path(result: &Path, entry: &ManifestEntry) -> PathBuf {
+    let key = crate::scan::sha(
+        format!(
+            "jadx-tui-v1\n{}\n{}\n",
+            entry.old_sha256.as_deref().unwrap_or("missing"),
+            entry.new_sha256.as_deref().unwrap_or("missing")
+        )
+        .as_bytes(),
+    );
+    result.join(".analysis/jadx").join(key)
 }
 
 fn is_jar_path(path: &str) -> bool {
@@ -774,6 +928,31 @@ mod tests {
         result
     }
 
+    fn add_cached_jadx_result(parent: &Path) {
+        let key = crate::scan::sha(b"jadx-tui-v1\nold\nnew\n");
+        let result = parent.join(".analysis/jadx").join(key);
+        std::fs::create_dir_all(result.join("blobs")).unwrap();
+        std::fs::create_dir_all(result.join("diffs/sources")).unwrap();
+        std::fs::write(result.join("blobs/source-old"), "return 1;\n").unwrap();
+        std::fs::write(result.join("blobs/source-new"), "return 2;\n").unwrap();
+        std::fs::write(
+            result.join("diffs/sources/Main.java.diff"),
+            "--- a/sources/Main.java\n+++ b/sources/Main.java\n-return 1;\n+return 2;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            result.join("manifest.json"),
+            r#"{
+              "schema_version":3,
+              "old":{"name":"example-1.jar","sha256":"old"},
+              "new":{"name":"example-2.jar","sha256":"new"},
+              "stats":{"added":0,"deleted":0,"modified":1,"unchanged":0,"renamed":0},
+              "entries":[{"path":"sources/Main.java","old_path":"sources/Main.java","new_path":"sources/Main.java","kind":"text","status":"modified","renamed":false,"diff":"diffs/sources/Main.java.diff","old_sha256":"source-old","new_sha256":"source-new","old_content":"blobs/source-old","new_content":"blobs/source-new"}]
+            }"#,
+        )
+        .unwrap();
+    }
+
     #[test]
     fn aligns_replaced_lines() {
         let rows = aligned_diff("one\ntwo\n", "one\nthree\n");
@@ -881,5 +1060,72 @@ mod tests {
             std::fs::read(request.old_blob).unwrap(),
             b"old jar".as_slice()
         );
+    }
+
+    #[test]
+    fn consolidates_all_jadx_changes_into_one_diff() {
+        let result = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(result.path().join("blobs")).unwrap();
+        std::fs::create_dir_all(result.path().join("diffs/sources")).unwrap();
+        std::fs::write(result.path().join("blobs/a-old"), "before a\n").unwrap();
+        std::fs::write(result.path().join("blobs/a-new"), "after a\n").unwrap();
+        std::fs::write(result.path().join("blobs/b-old"), "before b\n").unwrap();
+        std::fs::write(result.path().join("blobs/b-new"), "after b\n").unwrap();
+        std::fs::write(
+            result.path().join("diffs/sources/A.java.diff"),
+            "--- a/sources/A.java\n+++ b/sources/A.java\n-before a\n+after a\n",
+        )
+        .unwrap();
+        std::fs::write(
+            result.path().join("diffs/sources/B.java.diff"),
+            "--- a/sources/B.java\n+++ b/sources/B.java\n-before b\n+after b\n",
+        )
+        .unwrap();
+        std::fs::write(
+            result.path().join("manifest.json"),
+            r#"{
+              "schema_version":3,
+              "old":{"name":"old.jar","sha256":"a"},
+              "new":{"name":"new.jar","sha256":"b"},
+              "stats":{"added":0,"deleted":0,"modified":2,"unchanged":0,"renamed":0},
+              "entries":[
+                {"path":"sources/A.java","old_path":"sources/A.java","new_path":"sources/A.java","kind":"text","status":"modified","renamed":false,"diff":"diffs/sources/A.java.diff","old_sha256":"a-old","new_sha256":"a-new","old_content":"blobs/a-old","new_content":"blobs/a-new"},
+                {"path":"sources/B.java","old_path":"sources/B.java","new_path":"sources/B.java","kind":"text","status":"modified","renamed":false,"diff":"diffs/sources/B.java.diff","old_sha256":"b-old","new_sha256":"b-new","old_content":"blobs/b-old","new_content":"blobs/b-new"}
+              ]
+            }"#,
+        )
+        .unwrap();
+
+        let side_by_side = load_consolidated_side_by_side(result.path()).unwrap();
+        assert!(matches!(side_by_side, Content::SideBySide(rows) if
+            rows.iter().any(|row| row.old.text == "--- sources/A.java") &&
+            rows.iter().any(|row| row.old.text == "--- sources/B.java")));
+        let unified = load_consolidated_unified(result.path()).unwrap();
+        assert!(matches!(unified, Content::Unified(lines) if
+            lines.iter().any(|line| line.text == "-before a") &&
+            lines.iter().any(|line| line.text == "+after b")));
+    }
+
+    #[test]
+    fn selection_consolidates_cached_jadx_and_enter_opens_child() {
+        let result = jar_result_fixture();
+        add_cached_jadx_result(result.path());
+        let mut app = App::load(result.path()).unwrap();
+
+        assert!(app.showing_jadx_diff());
+        assert!(matches!(&app.content, Content::SideBySide(rows) if
+            rows.iter().any(|row| row.old.text == "return 1;") &&
+            rows.iter().any(|row| row.new.text == "return 2;")));
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        assert!(app.has_parent());
+        assert_eq!(app.manifest.old.name, "example-1.jar");
+
+        app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE))
+            .unwrap();
+        assert!(!app.has_parent());
+        assert_eq!(app.manifest.old.name, "old");
+        assert!(app.showing_jadx_diff());
     }
 }
