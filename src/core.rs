@@ -659,7 +659,7 @@ fn load_artifact(
 
 fn create_workspace(parent: Option<&Path>, label: &str) -> Result<tempfile::TempDir> {
     let mut builder = tempfile::Builder::new();
-    let prefix = format!("artifact-diff-{label}-");
+    let prefix = format!("diffplus-{label}-");
     builder.prefix(&prefix);
     if let Some(parent) = parent {
         std::fs::create_dir_all(parent)?;
@@ -966,7 +966,7 @@ mod tests {
         let ida = temp.path().join("fake-ida");
         std::fs::write(
             &ida,
-            "#!/bin/sh\npython3 -c 'import json,os; r=json.load(open(os.environ[\"ARTIFACT_DIFF_REQUEST\"])); open(r[\"export_database\"],\"wb\").write(b\"sqlite\")'\n",
+            "#!/bin/sh\npython3 -c 'import json,os; r=json.load(open(os.environ[\"DIFFPLUS_REQUEST\"])); open(r[\"export_database\"],\"wb\").write(b\"sqlite\")'\n",
         )
         .unwrap();
         let mut permissions = std::fs::metadata(&ida).unwrap().permissions();
@@ -976,7 +976,7 @@ mod tests {
         let adapter = temp.path().join("adapter.py");
         std::fs::write(
             &adapter,
-            "import json,os\nr=json.load(open(os.environ['ARTIFACT_DIFF_REQUEST']))\nf={'stable_id':'main','old_address':1,'new_address':2,'old_name':'main','new_name':'main','status':'modified','similarity':0.9,'old_pseudocode':'int main() { return 1; }','new_pseudocode':'int main() { return 2; }'}\njson.dump({'protocol_version':1,'functions':[f]},open(r['output'],'w'))\n",
+            "import json,os\nr=json.load(open(os.environ['DIFFPLUS_REQUEST']))\nf={'stable_id':'main','old_address':1,'new_address':2,'old_name':'main','new_name':'main','status':'modified','similarity':0.9,'old_pseudocode':'int main() { return 1; }','new_pseudocode':'int main() { return 2; }'}\njson.dump({'protocol_version':1,'functions':[f]},open(r['output'],'w'))\n",
         )
         .unwrap();
         let diaphora = temp.path().join("diaphora");

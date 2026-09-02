@@ -1,4 +1,4 @@
-# Artifact Diff --- Implementation Plan
+# Diffplus --- Implementation Plan
 
 ## 1. Goal
 
@@ -12,7 +12,7 @@ analyzer for each file, and write separate diff files while preserving
 the original path hierarchy. The output format should also be
 intentionally easy for a future Web UI to index and navigate.
 
-Working name in this plan: `artifact-diff`.
+Working name in this plan: `diffplus`.
 
 ## 2. Core Principles
 
@@ -104,18 +104,18 @@ that the diff layer understands.
 Suggested workspace:
 
 ``` text
-artifact-diff/
+diffplus/
 ├── Cargo.toml
 ├── crates/
-│   ├── artifact-core/
-│   ├── artifact-vfs/
-│   ├── artifact-archives/
-│   ├── artifact-classify/
-│   ├── artifact-diff/
-│   ├── artifact-cache/
+│   ├── diffplus-core/
+│   ├── diffplus-vfs/
+│   ├── diffplus-archives/
+│   ├── diffplus-classify/
+│   ├── diffplus-diff/
+│   ├── diffplus-cache/
 │   ├── analyzer-jadx/
 │   ├── analyzer-native/
-│   └── artifact-cli/
+│   └── diffplus-cli/
 ├── ida/
 │   ├── scripts/
 │   └── README.md
@@ -457,8 +457,8 @@ Example deployment:
 docker run --rm \
   -v /opt/ida:/opt/ida:ro \
   -v "$PWD":/work:ro \
-  -v artifact-diff-cache:/cache \
-  artifact-diff \
+  -v diffplus-cache:/cache \
+  diffplus \
   /work/old.tar.gz \
   /work/new.tar.gz \
   --output /output
@@ -479,7 +479,7 @@ or:
 The container should contain:
 
 ``` text
-Rust artifact-diff executable
+Rust diffplus executable
 Python runtime if Diaphora requires it
 Diaphora integration
 JADX
@@ -500,7 +500,7 @@ Ordinary archive traversal stays in memory/streaming.
 Tools that require files get a private ephemeral workspace:
 
 ``` text
-/tmp/artifact-diff/<job-id>/
+/tmp/diffplus/<job-id>/
 ├── input.bin
 ├── ida/
 ├── old.sqlite
@@ -625,7 +625,7 @@ Text                 5 changed
 JADX                 4 changed
 IDA/Diaphora         7 changed
 
-Output: ./artifact-diff-output/
+Output: ./diffplus-output/
 ```
 
 Optionally support:
@@ -766,7 +766,7 @@ Requirements:
 Initial CLI:
 
 ``` bash
-artifact-diff OLD NEW
+diffplus OLD NEW
 ```
 
 Useful options:
@@ -959,7 +959,7 @@ Implement:
 Deliverable:
 
 ``` bash
-artifact-diff old.tar.gz new.tar.gz -o result/
+diffplus old.tar.gz new.tar.gz -o result/
 ```
 
 produces useful per-file diffs.

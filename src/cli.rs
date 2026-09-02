@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "artifact-diff",
+    name = "diffplus",
     version,
     about = "Compare directories and archives by semantic file contents"
 )]

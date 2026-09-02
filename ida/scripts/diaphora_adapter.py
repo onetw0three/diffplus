@@ -1,4 +1,4 @@
-"""Narrow IDA/Diaphora adapter for artifact-diff protocol version 1.
+"""Narrow IDA/Diaphora adapter for diffplus protocol version 1.
 
 IDA runs the ``export`` operation. A normal Python interpreter runs the
 ``compare`` operation after both exports exist. Keeping SQLite translation in
@@ -20,9 +20,9 @@ AUTOMATIC_NAME_PREFIXES = ("sub_", "loc_", "nullsub_", "j_")
 
 
 def _load_request():
-    request_path = os.environ.get("ARTIFACT_DIFF_REQUEST")
+    request_path = os.environ.get("DIFFPLUS_REQUEST")
     if not request_path:
-        raise RuntimeError("ARTIFACT_DIFF_REQUEST is not set")
+        raise RuntimeError("DIFFPLUS_REQUEST is not set")
     with open(request_path, "r", encoding="utf-8") as handle:
         request = json.load(handle)
     if request.get("protocol_version") != PROTOCOL_VERSION:

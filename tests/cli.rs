@@ -21,7 +21,7 @@ fn writes_clean_git_style_results() {
     fs::create_dir_all(&output).unwrap();
     fs::write(output.join("stale.diff"), "stale").unwrap();
 
-    Command::cargo_bin("artifact-diff")
+    Command::cargo_bin("diffplus")
         .unwrap()
         .arg(&old)
         .arg(&new)
@@ -73,7 +73,7 @@ fn identical_archives_reuse_one_content_scan() {
     writer.finish().unwrap();
     fs::copy(&old, &new).unwrap();
 
-    Command::cargo_bin("artifact-diff")
+    Command::cargo_bin("diffplus")
         .unwrap()
         .args(["--jvm", "raw", "--output"])
         .arg(temp.path().join("result"))
@@ -124,7 +124,7 @@ fn default_mode_retains_changed_nested_jars_for_on_demand_analysis() {
         &jar_bytes(b"new class"),
     );
 
-    Command::cargo_bin("artifact-diff")
+    Command::cargo_bin("diffplus")
         .unwrap()
         .arg(&old)
         .arg(&new)
@@ -167,7 +167,7 @@ fn default_mode_retains_unmatched_native_binaries_for_manual_analysis() {
     write_tar(&old, "bin/legacy-service", b"\x7fELFold native");
     write_tar(&new, "bin/replacement-service", b"\x7fELFnew native");
 
-    Command::cargo_bin("artifact-diff")
+    Command::cargo_bin("diffplus")
         .unwrap()
         .arg(&old)
         .arg(&new)
@@ -209,7 +209,7 @@ fn different_tars_scan_concurrently_and_render_range_backed_diff() {
     write_tar(&old, b"before\n");
     write_tar(&new, b"after\n");
 
-    let mut command = Command::cargo_bin("artifact-diff").unwrap();
+    let mut command = Command::cargo_bin("diffplus").unwrap();
     let assertion = command
         .args(["--jvm", "raw", "--output"])
         .arg(&output)
@@ -229,7 +229,7 @@ fn different_tars_scan_concurrently_and_render_range_backed_diff() {
 #[test]
 fn fatal_input_error_uses_exit_two() {
     let temp = tempfile::tempdir().unwrap();
-    Command::cargo_bin("artifact-diff")
+    Command::cargo_bin("diffplus")
         .unwrap()
         .arg(temp.path().join("missing-old"))
         .arg(temp.path().join("missing-new"))
@@ -254,7 +254,7 @@ fn explicit_config_supplies_defaults_and_cli_overrides_them() {
     )
     .unwrap();
 
-    Command::cargo_bin("artifact-diff")
+    Command::cargo_bin("diffplus")
         .unwrap()
         .arg("--config")
         .arg(&config)
@@ -264,7 +264,7 @@ fn explicit_config_supplies_defaults_and_cli_overrides_them() {
         .code(1);
     assert!(configured_output.join("manifest.json").is_file());
 
-    Command::cargo_bin("artifact-diff")
+    Command::cargo_bin("diffplus")
         .unwrap()
         .arg("--config")
         .arg(&config)
@@ -280,7 +280,7 @@ fn explicit_config_supplies_defaults_and_cli_overrides_them() {
 #[test]
 fn explicit_missing_config_is_an_error() {
     let (temp, old, new) = fixture();
-    Command::cargo_bin("artifact-diff")
+    Command::cargo_bin("diffplus")
         .unwrap()
         .arg("--config")
         .arg(temp.path().join("missing.toml"))
@@ -294,7 +294,7 @@ fn explicit_missing_config_is_an_error() {
 #[test]
 fn view_mode_does_not_require_input_artifacts() {
     let temp = tempfile::tempdir().unwrap();
-    Command::cargo_bin("artifact-diff")
+    Command::cargo_bin("diffplus")
         .unwrap()
         .arg("--view")
         .arg(temp.path())
@@ -318,7 +318,7 @@ fn native_pipeline_writes_function_diff_and_metadata() {
     let counter = temp.path().join("ida-count");
     fs::write(
         &ida,
-        "#!/bin/sh\necho x >> \"$ARTIFACT_DIFF_COUNTER\"\npython3 -c 'import json,os; r=json.load(open(os.environ[\"ARTIFACT_DIFF_REQUEST\"])); open(r[\"export_database\"],\"wb\").write(b\"sqlite\")'\n",
+        "#!/bin/sh\necho x >> \"$DIFFPLUS_COUNTER\"\npython3 -c 'import json,os; r=json.load(open(os.environ[\"DIFFPLUS_REQUEST\"])); open(r[\"export_database\"],\"wb\").write(b\"sqlite\")'\n",
     )
     .unwrap();
     let mut permissions = fs::metadata(&ida).unwrap().permissions();
@@ -328,7 +328,7 @@ fn native_pipeline_writes_function_diff_and_metadata() {
     let adapter = temp.path().join("adapter.py");
     fs::write(
         &adapter,
-        "import json,os\nr=json.load(open(os.environ['ARTIFACT_DIFF_REQUEST']))\nf={'stable_id':'parse','old_address':1,'new_address':2,'old_name':'parse','new_name':'parse','status':'modified','similarity':0.9,'match_category':'partial','match_reason':'test','old_pseudocode':'int parse() { return 1; }','new_pseudocode':'int parse() { return 2; }'}\njson.dump({'protocol_version':1,'functions':[f]},open(r['output'],'w'))\n",
+        "import json,os\nr=json.load(open(os.environ['DIFFPLUS_REQUEST']))\nf={'stable_id':'parse','old_address':1,'new_address':2,'old_name':'parse','new_name':'parse','status':'modified','similarity':0.9,'match_category':'partial','match_reason':'test','old_pseudocode':'int parse() { return 1; }','new_pseudocode':'int parse() { return 2; }'}\njson.dump({'protocol_version':1,'functions':[f]},open(r['output'],'w'))\n",
     )
     .unwrap();
     let diaphora = temp.path().join("diaphora");
@@ -339,9 +339,9 @@ fn native_pipeline_writes_function_diff_and_metadata() {
     let cache = temp.path().join("cache");
 
     for _ in 0..2 {
-        Command::cargo_bin("artifact-diff")
+        Command::cargo_bin("diffplus")
             .unwrap()
-            .env("ARTIFACT_DIFF_COUNTER", &counter)
+            .env("DIFFPLUS_COUNTER", &counter)
             .args(["--native", "ida", "--ida-path"])
             .arg(&ida)
             .arg("--diaphora-script")
@@ -388,7 +388,7 @@ fn identical_native_inputs_skip_ida() {
     fs::write(diaphora.join("diaphora.py"), "").unwrap();
     fs::write(diaphora.join("diaphora_ida.py"), "").unwrap();
 
-    Command::cargo_bin("artifact-diff")
+    Command::cargo_bin("diffplus")
         .unwrap()
         .args(["--native", "ida", "--ida-path"])
         .arg(&ida)

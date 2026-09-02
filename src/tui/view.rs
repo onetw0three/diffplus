@@ -46,7 +46,7 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &App) {
 fn render_title(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let title = Line::from(vec![
         Span::styled(
-            " artifact-diff ",
+            " diffplus ",
             Style::default()
                 .fg(Color::White)
                 .bg(BLUE)

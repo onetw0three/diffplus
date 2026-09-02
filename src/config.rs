@@ -6,7 +6,7 @@ use clap::{parser::ValueSource, ArgMatches};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-const APPLICATION_DIRECTORY: &str = "artifact-diff";
+const APPLICATION_DIRECTORY: &str = "diffplus";
 const CONFIG_FILENAME: &str = "config.toml";
 
 #[derive(Debug, Default, Deserialize)]
@@ -155,7 +155,7 @@ mod tests {
     #[test]
     fn config_sets_defaults_but_cli_wins() {
         let (mut args, matches) = parsed(&[
-            "artifact-diff",
+            "diffplus",
             "old",
             "new",
             "--max-depth",

@@ -1,5 +1,5 @@
 [package]
-name = "artifact-diff"
+name = "diffplus"
 version = "0.1.0"
 edition = "2021"
 description = "Compare the semantic contents of software artifacts"

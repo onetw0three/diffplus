@@ -109,30 +109,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "artifact-diff"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "assert_cmd",
- "bzip2",
- "clap",
- "crossterm",
- "flate2",
- "predicates",
- "ratatui",
- "serde",
- "serde_json",
- "sha2",
- "similar",
- "tar",
- "tempfile",
- "toml",
- "unified-diff",
- "xz2",
- "zip",
-]
-
-[[package]]
 name = "assert_cmd"
 version = "2.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -494,6 +470,30 @@ name = "difflib"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6184e33543162437515c2e2b48714794e37845ec9851711914eec9d308f6ebe8"
+
+[[package]]
+name = "diffplus"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "assert_cmd",
+ "bzip2",
+ "clap",
+ "crossterm",
+ "flate2",
+ "predicates",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "sha2",
+ "similar",
+ "tar",
+ "tempfile",
+ "toml",
+ "unified-diff",
+ "xz2",
+ "zip",
+]
 
 [[package]]
 name = "digest"

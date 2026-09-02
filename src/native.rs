@@ -143,7 +143,7 @@ pub(crate) fn run_adapter(
     crate::process::run(
         Command::new(python)
             .arg(adapter)
-            .env("ARTIFACT_DIFF_REQUEST", &request_path),
+            .env("DIFFPLUS_REQUEST", &request_path),
         "Diaphora comparison",
     )
     .with_context(|| format!("running Python adapter at {}", python.display()))?;
@@ -224,7 +224,7 @@ fn export_database(
             .arg(format!("-o{}", ida_database.display()))
             .arg(format!("-S{}", adapter.display()))
             .arg(input)
-            .env("ARTIFACT_DIFF_REQUEST", request_path),
+            .env("DIFFPLUS_REQUEST", request_path),
         "IDA export",
     )
     .with_context(|| format!("running IDA at {}", ida.display()))?;
@@ -400,7 +400,7 @@ mod tests {
         let ida = temp.path().join("fake-ida");
         std::fs::write(
             &ida,
-            "#!/bin/sh\npython3 -c 'import json,os; r=json.load(open(os.environ[\"ARTIFACT_DIFF_REQUEST\"])); open(r[\"export_database\"],\"wb\").write(b\"sqlite\")'\n",
+            "#!/bin/sh\npython3 -c 'import json,os; r=json.load(open(os.environ[\"DIFFPLUS_REQUEST\"])); open(r[\"export_database\"],\"wb\").write(b\"sqlite\")'\n",
         )
         .unwrap();
         let mut permissions = std::fs::metadata(&ida).unwrap().permissions();
@@ -410,7 +410,7 @@ mod tests {
         let adapter = temp.path().join("adapter.py");
         std::fs::write(
             &adapter,
-            "import json,os\nr=json.load(open(os.environ['ARTIFACT_DIFF_REQUEST']))\njson.dump({'protocol_version':1,'functions':[]},open(r['output'],'w'))\n",
+            "import json,os\nr=json.load(open(os.environ['DIFFPLUS_REQUEST']))\njson.dump({'protocol_version':1,'functions':[]},open(r['output'],'w'))\n",
         )
         .unwrap();
         let old = temp.path().join("old.bin");

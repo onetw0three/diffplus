@@ -10,12 +10,12 @@ pub(crate) fn set_enabled(enabled: bool) {
 
 pub(crate) fn info(message: impl std::fmt::Display) {
     if ENABLED.load(Ordering::Relaxed) {
-        eprintln!("[artifact-diff] {message}");
+        eprintln!("[diffplus] {message}");
     }
 }
 
 pub(crate) fn subprocess(label: &str, stream: &str, message: &str) {
     if ENABLED.load(Ordering::Relaxed) {
-        eprintln!("[artifact-diff] {label} {stream}: {message}");
+        eprintln!("[diffplus] {label} {stream}: {message}");
     }
 }

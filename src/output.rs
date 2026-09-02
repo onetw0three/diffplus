@@ -14,7 +14,7 @@ impl OutputTransaction {
         let parent = destination.parent().unwrap_or_else(|| Path::new("."));
         std::fs::create_dir_all(parent)?;
         let temporary = tempfile::Builder::new()
-            .prefix(".artifact-diff-")
+            .prefix(".diffplus-")
             .tempdir_in(parent)?;
         let staged = temporary.path().join("result");
         std::fs::create_dir(&staged)?;

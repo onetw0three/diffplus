@@ -1,4 +1,4 @@
-# artifact-diff
+# diffplus
 
 Rust-first comparison of software artifacts by their semantic contents.
 
@@ -41,7 +41,7 @@ builds are substantially slower at hashing and decompression:
 
 ```bash
 cargo build --release
-target/release/artifact-diff OLD NEW --output result
+target/release/diffplus OLD NEW --output result
 ```
 
 Add `--tui` to open the comparison immediately in an interactive terminal:
@@ -101,7 +101,7 @@ containers:
 cargo run -- OLD.jar NEW.jar \
   --jvm jadx \
   --jadx-path /path/to/jadx \
-  --cache-dir .cache/artifact-diff
+  --cache-dir .cache/diffplus
 ```
 
 JADX discovery searches `PATH`, `$JADX_HOME/bin/jadx`,
@@ -114,8 +114,8 @@ for fatal input or analyzer errors.
 ## Configuration
 
 Persistent defaults can be stored in
-`$XDG_CONFIG_HOME/artifact-diff/config.toml`, or
-`~/.config/artifact-diff/config.toml` when `XDG_CONFIG_HOME` is unset. For
+`$XDG_CONFIG_HOME/diffplus/config.toml`, or
+`~/.config/diffplus/config.toml` when `XDG_CONFIG_HOME` is unset. For
 example:
 
 ```toml
@@ -134,8 +134,8 @@ diaphora_path = "~/tools/diaphora"
 diaphora_script = "~/src/diffplus/ida/scripts/diaphora_adapter.py"
 python_path = "python3"
 
-cache_dir = "~/.cache/artifact-diff"
-workspace_dir = "/tmp/artifact-diff"
+cache_dir = "~/.cache/diffplus"
+workspace_dir = "/tmp/diffplus"
 ```
 
 All fields are optional. Command-line arguments override configured values.
@@ -164,11 +164,11 @@ On-demand native analysis from an existing result accepts the same toolchain
 options:
 
 ```bash
-artifact-diff --view result \
+diffplus --view result \
   --ida-path /opt/ida/ida64 \
   --diaphora-path /opt/diaphora \
   --diaphora-script "$PWD/ida/scripts/diaphora_adapter.py" \
-  --cache-dir .cache/artifact-diff
+  --cache-dir .cache/diffplus
 ```
 
 ```bash
