@@ -10,45 +10,104 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
-use std::{io::IsTerminal, path::Path, time::Duration};
+use std::{
+    io::IsTerminal,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
-pub(crate) fn run(result: &Path) -> Result<()> {
+#[derive(Clone)]
+pub(crate) struct AnalyzerOptions {
+    pub(crate) jadx_path: PathBuf,
+    pub(crate) ida_path: Option<PathBuf>,
+    pub(crate) diaphora_script: Option<PathBuf>,
+    pub(crate) diaphora_path: Option<PathBuf>,
+    pub(crate) python_path: PathBuf,
+    pub(crate) cache_dir: Option<PathBuf>,
+    pub(crate) no_cache: bool,
+}
+
+impl AnalyzerOptions {
+    pub(crate) fn from_args(args: &crate::cli::Args) -> Self {
+        Self {
+            jadx_path: args.jadx_path.clone(),
+            ida_path: args.ida_path.clone(),
+            diaphora_script: args.diaphora_script.clone(),
+            diaphora_path: args.diaphora_path.clone(),
+            python_path: args.python_path.clone(),
+            cache_dir: args.cache_dir.clone(),
+            no_cache: args.no_cache,
+        }
+    }
+}
+
+pub(crate) fn run(result: &Path, options: AnalyzerOptions) -> Result<()> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         bail!("the terminal UI requires an interactive stdin and stdout");
     }
 
     let mut app = app::App::load(result)?;
     let mut terminal = TerminalSession::start()?;
-    let mut jadx_job: Option<(
-        app::JadxRequest,
+    let mut analysis_job: Option<(
+        app::AnalysisRequest,
         std::thread::JoinHandle<anyhow::Result<()>>,
     )> = None;
     loop {
-        if jadx_job
+        if analysis_job
             .as_ref()
             .is_some_and(|(_, handle)| handle.is_finished())
         {
-            let (request, handle) = jadx_job.take().expect("finished JADX job exists");
+            let (request, handle) = analysis_job.take().expect("finished analyzer job exists");
             let result = handle
                 .join()
-                .map_err(|_| anyhow::anyhow!("JADX analysis thread panicked"))
+                .map_err(|_| anyhow::anyhow!("analyzer thread panicked"))
                 .and_then(|result| result);
             crate::progress::set_enabled(true);
-            app.finish_jadx(request, result);
+            app.finish_analysis(request, result);
         }
         terminal.terminal.draw(|frame| view::render(frame, &app))?;
-        if jadx_job.is_none() {
-            if let Some(request) = app.take_jadx_request() {
+        if analysis_job.is_none() {
+            if let Some(request) = app.take_analysis_request() {
                 let old_blob = request.old_blob.clone();
                 let new_blob = request.new_blob.clone();
                 let old_name = request.old_name.clone();
                 let new_name = request.new_name.clone();
                 let output = request.output.clone();
+                let kind = request.kind;
+                let options = options.clone();
                 crate::progress::set_enabled(false);
-                let handle = std::thread::spawn(move || {
-                    crate::core::run_jadx_diff(&old_blob, &new_blob, &old_name, &new_name, &output)
+                let handle = std::thread::spawn(move || match kind {
+                    app::AnalyzerKind::Jadx => crate::core::run_jadx_diff(
+                        &old_blob,
+                        &new_blob,
+                        &old_name,
+                        &new_name,
+                        &output,
+                        &options.jadx_path,
+                    ),
+                    app::AnalyzerKind::Ida => crate::core::run_native_diff(
+                        &old_blob,
+                        &new_blob,
+                        &old_name,
+                        &new_name,
+                        &output,
+                        options
+                            .ida_path
+                            .as_deref()
+                            .context("--ida-path is required for on-demand native analysis")?,
+                        &options.python_path,
+                        options.diaphora_script.as_deref().context(
+                            "--diaphora-script is required for on-demand native analysis",
+                        )?,
+                        options
+                            .diaphora_path
+                            .as_deref()
+                            .context("--diaphora-path is required for on-demand native analysis")?,
+                        options.cache_dir.as_deref(),
+                        options.no_cache,
+                    ),
                 });
-                jadx_job = Some((request, handle));
+                analysis_job = Some((request, handle));
                 continue;
             }
         }

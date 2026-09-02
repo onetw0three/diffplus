@@ -149,6 +149,46 @@ fn default_mode_retains_changed_nested_jars_for_on_demand_analysis() {
 }
 
 #[test]
+fn default_mode_retains_unmatched_native_binaries_for_manual_analysis() {
+    fn write_tar(path: &std::path::Path, member: &str, bytes: &[u8]) {
+        let mut archive = tar::Builder::new(fs::File::create(path).unwrap());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        archive.append_data(&mut header, member, bytes).unwrap();
+        archive.finish().unwrap();
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let old = temp.path().join("old.tar");
+    let new = temp.path().join("new.tar");
+    let output = temp.path().join("result");
+    write_tar(&old, "bin/legacy-service", b"\x7fELFold native");
+    write_tar(&new, "bin/replacement-service", b"\x7fELFnew native");
+
+    Command::cargo_bin("artifact-diff")
+        .unwrap()
+        .arg(&old)
+        .arg(&new)
+        .arg("--output")
+        .arg(&output)
+        .assert()
+        .code(1);
+
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("manifest.json")).unwrap()).unwrap();
+    let entries = manifest["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 2);
+    assert!(entries.iter().all(|entry| {
+        entry["old_content"]
+            .as_str()
+            .or_else(|| entry["new_content"].as_str())
+            .is_some_and(|blob| output.join(blob).is_file())
+    }));
+}
+
+#[test]
 fn different_tars_scan_concurrently_and_render_range_backed_diff() {
     fn write_tar(path: &std::path::Path, content: &[u8]) {
         let mut builder = tar::Builder::new(fs::File::create(path).unwrap());

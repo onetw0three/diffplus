@@ -137,6 +137,12 @@ fn render_explorer(frame: &mut Frame<'_>, app: &App, area: Rect) {
                             .add_modifier(Modifier::BOLD),
                     ));
                 }
+                if node.entry.is_some_and(|entry| app.is_marked_entry(entry)) {
+                    spans.push(Span::styled(
+                        "  ◆",
+                        Style::default().fg(Color::Rgb(197, 134, 192)),
+                    ));
+                }
             }
             let style = if selected {
                 Style::default().bg(Color::Rgb(4, 57, 94))
@@ -167,9 +173,9 @@ fn render_editor(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .constraints([Constraint::Length(3), Constraint::Min(3)])
         .split(area);
     let selected = app.selected_entry();
-    let mode = match (app.showing_jadx_diff(), app.mode) {
-        (true, ViewMode::SideBySide) => "JADX · CONSOLIDATED · SIDE BY SIDE",
-        (true, ViewMode::Unified) => "JADX · CONSOLIDATED · UNIFIED",
+    let mode = match (app.showing_analysis(), app.mode) {
+        (true, ViewMode::SideBySide) => "ANALYZER · CONSOLIDATED · SIDE BY SIDE",
+        (true, ViewMode::Unified) => "ANALYZER · CONSOLIDATED · UNIFIED",
         (false, ViewMode::SideBySide) => "SIDE BY SIDE",
         (false, ViewMode::Unified) => "UNIFIED",
     };
@@ -242,15 +248,16 @@ fn render_side_by_side(frame: &mut Frame<'_>, app: &App, rows: &[super::app::Dif
         .map(|row| cell_line(&row.new))
         .collect::<Vec<_>>();
     let scroll = (app.vertical_scroll, app.horizontal_scroll);
+    let (old_name, new_name) = app.diff_names();
     frame.render_widget(
         Paragraph::new(old_lines)
-            .block(panel(format!(" {} ", app.manifest.old.name)))
+            .block(panel(format!(" {old_name} ")))
             .scroll(scroll),
         panes[0],
     );
     frame.render_widget(
         Paragraph::new(new_lines)
-            .block(panel(format!(" {} ", app.manifest.new.name)))
+            .block(panel(format!(" {new_name} ")))
             .scroll(scroll),
         panes[1],
     );
@@ -271,13 +278,13 @@ fn render_unified(frame: &mut Frame<'_>, app: &App, lines: &[UnifiedLine], area:
 
 fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let default_text = if app.analyzing {
-        " JADX is analyzing the selected JAR… "
+        " Analyzer is processing the selected files… "
     } else if app.has_parent() {
-        " Backspace parent JAR  q quit  / search  wheel/PgUp/PgDn/J/K scroll  Tab view "
-    } else if app.showing_jadx_diff() {
-        " Enter JAR details  q quit  wheel/PgUp/PgDn/J/K scroll  Tab view "
+        " Backspace parent analysis  q quit  / search  wheel/PgUp/PgDn/J/K scroll  Tab view "
+    } else if app.showing_analysis() {
+        " Enter analyzer details  q quit  wheel/PgUp/PgDn/J/K scroll  Tab view "
     } else {
-        " q quit  / search  Enter JAR diff  Space folder  wheel/PgUp/PgDn/J/K scroll  Tab view  1–4 filters "
+        " q quit  m mark unmatched  Enter analyze/details  Space folder  wheel/PgUp/PgDn scroll  Tab view "
     };
     let text = app.error.as_deref().unwrap_or(default_text);
     let style = if app.error.is_some() {

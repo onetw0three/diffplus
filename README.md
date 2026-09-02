@@ -69,6 +69,12 @@ existing diff pane. Press `Enter` to open its per-file child explorer and
 `Backspace` to return to the consolidated parent view. The editor header shows
 before/after paths and sizes.
 
+Files left as separate additions and deletions can be paired manually. Select
+one unmatched file and press `m`, move to its counterpart on the opposite side,
+then press `Enter`. A `◆` marks the first selection. The viewer selects JADX
+for JARs and IDA/Diaphora for ELF, PE, and Mach-O binaries; both selected files
+must use the same analyzer.
+
 Rename detection first pairs unique identical-content moves, then unique paths
 after normalizing semantic versions and long build numbers. Ambiguous groups
 remain added/deleted to avoid silently pairing unrelated files.
@@ -119,6 +125,17 @@ binary entries. Use `--max-depth 2` or higher to opt into recursive expansion.
 
 Install Diaphora separately, and provide an IDA executable with Hex-Rays. The
 Diaphora source remains external and is not bundled with this project.
+
+On-demand native analysis from an existing result accepts the same toolchain
+options:
+
+```bash
+artifact-diff --view result \
+  --ida-path /opt/ida/ida64 \
+  --diaphora-path /opt/diaphora \
+  --diaphora-script "$PWD/ida/scripts/diaphora_adapter.py" \
+  --cache-dir .cache/artifact-diff
+```
 
 ```bash
 cargo run -- OLD.bin NEW.bin \

@@ -1,3 +1,4 @@
+mod classify;
 mod cli;
 mod core;
 mod diff;
@@ -13,8 +14,9 @@ use clap::Parser;
 
 fn main() {
     let args = cli::Args::parse();
+    let analyzer_options = tui::AnalyzerOptions::from_args(&args);
     if let Some(result) = &args.view {
-        if let Err(error) = tui::run(result) {
+        if let Err(error) = tui::run(result, analyzer_options) {
             eprintln!("{error:#}");
             std::process::exit(2);
         }
@@ -25,7 +27,7 @@ fn main() {
     match core::run(args) {
         Ok(changed) => {
             if show_tui {
-                if let Err(error) = tui::run(&output) {
+                if let Err(error) = tui::run(&output, analyzer_options) {
                     eprintln!("{error:#}");
                     std::process::exit(2);
                 }

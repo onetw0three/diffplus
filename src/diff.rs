@@ -263,8 +263,12 @@ fn snapshot_content(
     status: &str,
     logical_path: Option<&str>,
 ) -> Result<Option<String>> {
-    let retain_for_viewer =
-        entry.is_some_and(|entry| entry.kind == "text") || logical_path.is_some_and(is_jar_path);
+    let retain_for_viewer = match entry {
+        Some(entry) if entry.kind == "text" => true,
+        Some(_) if logical_path.is_some_and(is_jar_path) => true,
+        Some(entry) => is_native_content(entry)?,
+        None => false,
+    };
     let Some(entry) = entry.filter(|_| status != "unchanged" && retain_for_viewer) else {
         return Ok(None);
     };
@@ -282,6 +286,15 @@ fn is_jar_path(path: &str) -> bool {
         .extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("jar"))
+}
+
+fn is_native_content(entry: &Entry) -> Result<bool> {
+    use std::io::Read;
+
+    let mut magic = [0_u8; 4];
+    let read = entry.content.open()?.read(&mut magic)?;
+    let magic = &magic[..read];
+    Ok(crate::classify::is_native_magic(magic))
 }
 
 fn make_diff(

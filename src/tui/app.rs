@@ -66,12 +66,52 @@ pub(super) struct TreeNode {
     pub(super) entry: Option<usize>,
 }
 
-pub(super) struct JadxRequest {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum AnalyzerKind {
+    Jadx,
+    Ida,
+}
+
+impl AnalyzerKind {
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Jadx => "JADX",
+            Self::Ida => "IDA/Diaphora",
+        }
+    }
+
+    fn directory(self) -> &'static str {
+        match self {
+            Self::Jadx => "jadx",
+            Self::Ida => "ida",
+        }
+    }
+}
+
+pub(super) struct AnalysisRequest {
+    pub(super) kind: AnalyzerKind,
     pub(super) old_blob: PathBuf,
     pub(super) new_blob: PathBuf,
     pub(super) old_name: String,
     pub(super) new_name: String,
+    old_digest: String,
+    new_digest: String,
     pub(super) output: PathBuf,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ArtifactSide {
+    Old,
+    New,
+}
+
+#[derive(Clone)]
+struct MarkedFile {
+    side: ArtifactSide,
+    blob: PathBuf,
+    path: String,
+    digest: String,
+    kind: AnalyzerKind,
 }
 
 #[derive(Default)]
@@ -96,9 +136,12 @@ pub(super) struct App {
     pub(super) horizontal_scroll: u16,
     pub(super) content: Content,
     pub(super) error: Option<String>,
-    active_jadx: Option<PathBuf>,
-    parents: Vec<PathBuf>,
-    pending_jadx: Option<JadxRequest>,
+    active_analysis: Option<PathBuf>,
+    analysis_names: Option<(String, String)>,
+    parent: Option<Box<App>>,
+    marked: Option<MarkedFile>,
+    manual_results: BTreeMap<String, PathBuf>,
+    pending_analysis: Option<AnalysisRequest>,
     pub(super) analyzing: bool,
 }
 
@@ -131,9 +174,12 @@ impl App {
             horizontal_scroll: 0,
             content: Content::Message(String::new()),
             error: None,
-            active_jadx: None,
-            parents: Vec::new(),
-            pending_jadx: None,
+            active_analysis: None,
+            analysis_names: None,
+            parent: None,
+            marked: None,
+            manual_results: BTreeMap::new(),
+            pending_analysis: None,
             analyzing: false,
         };
         app.select_first_file();
@@ -207,6 +253,7 @@ impl App {
             }
             KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
             KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
+            KeyCode::Char('m') => self.toggle_mark()?,
             KeyCode::Enter => self.activate_or_analyze()?,
             KeyCode::Char(' ') | KeyCode::Right => self.activate_selected(false),
             KeyCode::Left => self.activate_selected(true),
@@ -238,27 +285,62 @@ impl App {
         Ok(false)
     }
 
-    pub(super) fn take_jadx_request(&mut self) -> Option<JadxRequest> {
-        self.pending_jadx.take()
+    pub(super) fn take_analysis_request(&mut self) -> Option<AnalysisRequest> {
+        self.pending_analysis.take()
     }
 
-    pub(super) fn finish_jadx(&mut self, request: JadxRequest, result: Result<()>) {
+    pub(super) fn finish_analysis(&mut self, request: AnalysisRequest, result: Result<()>) {
         self.analyzing = false;
+        if result.is_ok() {
+            self.active_analysis = Some(request.output.clone());
+            self.analysis_names = Some((request.old_name.clone(), request.new_name.clone()));
+            self.manual_results
+                .insert(request.old_digest.clone(), request.output.clone());
+            self.manual_results
+                .insert(request.new_digest.clone(), request.output.clone());
+        }
         match result.and_then(|()| self.open_child(&request.output)) {
             Ok(()) => {}
             Err(error) => {
-                self.content = Content::Message("JADX analysis failed.".into());
+                self.content =
+                    Content::Message(format!("{} analysis failed.", request.kind.label()));
                 self.error = Some(format!("{error:#}"));
             }
         }
     }
 
-    pub(super) fn showing_jadx_diff(&self) -> bool {
-        self.active_jadx.is_some()
+    pub(super) fn showing_analysis(&self) -> bool {
+        self.active_analysis.is_some()
+    }
+
+    pub(super) fn diff_names(&self) -> (&str, &str) {
+        self.analysis_names
+            .as_ref()
+            .map(|(old, new)| (old.as_str(), new.as_str()))
+            .unwrap_or((&self.manifest.old.name, &self.manifest.new.name))
     }
 
     pub(super) fn has_parent(&self) -> bool {
-        !self.parents.is_empty()
+        self.parent.is_some()
+    }
+
+    pub(super) fn is_marked_entry(&self, index: usize) -> bool {
+        let Some(marked) = &self.marked else {
+            return false;
+        };
+        self.manifest
+            .entries
+            .get(index)
+            .is_some_and(|entry| match marked.side {
+                ArtifactSide::Old => {
+                    entry.old_sha256.as_deref() == Some(marked.digest.as_str())
+                        && entry.old_path.as_deref() == Some(marked.path.as_str())
+                }
+                ArtifactSide::New => {
+                    entry.new_sha256.as_deref() == Some(marked.digest.as_str())
+                        && entry.new_path.as_deref() == Some(marked.path.as_str())
+                }
+            })
     }
 
     pub(super) fn handle_mouse(&mut self, mouse: MouseEvent, width: u16, height: u16) {
@@ -373,7 +455,7 @@ impl App {
             return;
         };
         if node.directory {
-            self.active_jadx = None;
+            self.active_analysis = None;
             if !collapse_only && self.collapsed.remove(&node.path) {
                 // Right/Enter toggles a collapsed directory open.
             } else {
@@ -401,59 +483,180 @@ impl App {
         else {
             return Ok(());
         };
-        let old_path = entry.old_path.as_deref().unwrap_or(&entry.path);
-        let new_path = entry.new_path.as_deref().unwrap_or(&entry.path);
-        if !is_jar_path(old_path) && !is_jar_path(new_path) {
-            return Ok(());
+
+        if let Some(marked) = self.marked.clone() {
+            let Some(current) = self.one_sided_candidate(entry)? else {
+                self.error =
+                    Some("Select an unmatched added or deleted analyzer-compatible file".into());
+                return Ok(());
+            };
+            if current.side == marked.side {
+                self.error = Some("The marked files must come from opposite artifact sides".into());
+                return Ok(());
+            }
+            let (old, new) = if marked.side == ArtifactSide::Old {
+                (marked, current)
+            } else {
+                (current, marked)
+            };
+            return self.queue_analysis(old, new);
         }
-        let (Some(old_content), Some(new_content)) =
-            (entry.old_content.as_deref(), entry.new_content.as_deref())
-        else {
-            self.error = Some(
-                "JADX requires a changed JAR present on both sides; regenerate older results with this version"
-                    .into(),
-            );
+
+        let Some((old, new)) = self.paired_candidates(entry)? else {
+            if entry.old_content.is_some() || entry.new_content.is_some() {
+                self.error = Some(
+                    "Press m on an unmatched file, select its counterpart, then press Enter".into(),
+                );
+            }
             return Ok(());
         };
+        self.queue_analysis(old, new)
+    }
 
-        let output = jadx_output_path(&self.result, entry);
+    fn toggle_mark(&mut self) -> Result<()> {
+        let Some(entry) = self
+            .visible_nodes()
+            .get(self.selected)
+            .and_then(|node| node.entry)
+            .and_then(|index| self.manifest.entries.get(index))
+        else {
+            return Ok(());
+        };
+        let Some(candidate) = self.one_sided_candidate(entry)? else {
+            self.error = Some("Only unmatched JARs or native binaries can be marked".into());
+            return Ok(());
+        };
+        if self.marked.as_ref().is_some_and(|marked| {
+            marked.side == candidate.side && marked.digest == candidate.digest
+        }) {
+            self.marked = None;
+        } else {
+            self.marked = Some(candidate);
+        }
+        self.error = None;
+        Ok(())
+    }
+
+    fn queue_analysis(&mut self, old: MarkedFile, new: MarkedFile) -> Result<()> {
+        if old.kind != new.kind {
+            self.error = Some(format!(
+                "Analyzer mismatch: {} uses {}, while {} uses {}",
+                old.path,
+                old.kind.label(),
+                new.path,
+                new.kind.label()
+            ));
+            return Ok(());
+        }
+        let output = analysis_output_path(&self.result, old.kind, &old.digest, &new.digest);
         if output.join("manifest.json").is_file() {
+            self.active_analysis = Some(output.clone());
+            self.analysis_names = Some((file_name(&old.path), file_name(&new.path)));
+            self.manual_results
+                .insert(old.digest.clone(), output.clone());
+            self.manual_results
+                .insert(new.digest.clone(), output.clone());
             return self.open_child(&output);
         }
 
-        let request = JadxRequest {
-            old_blob: self.resolve_relative(old_content)?,
-            new_blob: self.resolve_relative(new_content)?,
-            old_name: file_name(old_path),
-            new_name: file_name(new_path),
+        let request = AnalysisRequest {
+            kind: old.kind,
+            old_blob: old.blob,
+            new_blob: new.blob,
+            old_name: file_name(&old.path),
+            new_name: file_name(&new.path),
+            old_digest: old.digest,
+            new_digest: new.digest,
             output,
         };
-        self.content = Content::Message(
-            "Running JADX source analysis…\n\nThis result will be reused the next time you press Enter."
-                .into(),
-        );
+        self.content = Content::Message(format!(
+            "Running {} analysis…\n\nThis result will be reused the next time you press Enter.",
+            request.kind.label()
+        ));
         self.error = None;
         self.analyzing = true;
-        self.pending_jadx = Some(request);
+        self.marked = None;
+        self.pending_analysis = Some(request);
         Ok(())
+    }
+
+    fn paired_candidates(&self, entry: &ManifestEntry) -> Result<Option<(MarkedFile, MarkedFile)>> {
+        let (Some(old_content), Some(new_content)) =
+            (entry.old_content.as_deref(), entry.new_content.as_deref())
+        else {
+            return Ok(None);
+        };
+        let old_path = entry.old_path.as_deref().unwrap_or(&entry.path);
+        let new_path = entry.new_path.as_deref().unwrap_or(&entry.path);
+        let old_blob = self.resolve_relative(old_content)?;
+        let new_blob = self.resolve_relative(new_content)?;
+        let Some(old_kind) = analyzer_kind(old_path, &old_blob)? else {
+            return Ok(None);
+        };
+        let Some(new_kind) = analyzer_kind(new_path, &new_blob)? else {
+            return Ok(None);
+        };
+        Ok(Some((
+            MarkedFile {
+                side: ArtifactSide::Old,
+                blob: old_blob,
+                path: old_path.to_owned(),
+                digest: entry.old_sha256.clone().unwrap_or_default(),
+                kind: old_kind,
+            },
+            MarkedFile {
+                side: ArtifactSide::New,
+                blob: new_blob,
+                path: new_path.to_owned(),
+                digest: entry.new_sha256.clone().unwrap_or_default(),
+                kind: new_kind,
+            },
+        )))
+    }
+
+    fn one_sided_candidate(&self, entry: &ManifestEntry) -> Result<Option<MarkedFile>> {
+        let (side, content, path, digest) =
+            match (entry.old_content.as_deref(), entry.new_content.as_deref()) {
+                (Some(content), None) => (
+                    ArtifactSide::Old,
+                    content,
+                    entry.old_path.as_deref().unwrap_or(&entry.path),
+                    entry.old_sha256.as_deref().unwrap_or_default(),
+                ),
+                (None, Some(content)) => (
+                    ArtifactSide::New,
+                    content,
+                    entry.new_path.as_deref().unwrap_or(&entry.path),
+                    entry.new_sha256.as_deref().unwrap_or_default(),
+                ),
+                _ => return Ok(None),
+            };
+        let blob = self.resolve_relative(content)?;
+        let Some(kind) = analyzer_kind(path, &blob)? else {
+            return Ok(None);
+        };
+        Ok(Some(MarkedFile {
+            side,
+            blob,
+            path: path.to_owned(),
+            digest: digest.to_owned(),
+            kind,
+        }))
     }
 
     fn open_child(&mut self, result: &Path) -> Result<()> {
         let mut child = Self::load(result)?;
-        child.parents = std::mem::take(&mut self.parents);
-        child.parents.push(self.result.clone());
-        *self = child;
+        std::mem::swap(self, &mut child);
+        self.parent = Some(Box::new(child));
         Ok(())
     }
 
     fn open_parent(&mut self) -> Result<()> {
-        let Some(result) = self.parents.pop() else {
+        let Some(parent) = self.parent.take() else {
             return Ok(());
         };
-        let remaining = std::mem::take(&mut self.parents);
-        let mut parent = Self::load(&result)?;
-        parent.parents = remaining;
-        *self = parent;
+        *self = *parent;
+        self.refresh_content();
         Ok(())
     }
 
@@ -471,17 +674,23 @@ impl App {
     }
 
     fn reset_view(&mut self) {
-        self.active_jadx = None;
+        self.active_analysis = None;
+        self.analysis_names = None;
         self.vertical_scroll = 0;
         self.horizontal_scroll = 0;
         self.error = None;
     }
 
     fn refresh_content(&mut self) {
-        if self.active_jadx.is_none() {
-            self.active_jadx = self.cached_jadx_result();
+        if self.active_analysis.is_none() {
+            if let Some(result) = self.cached_analysis_result() {
+                self.analysis_names = load_manifest(&result)
+                    .ok()
+                    .map(|manifest| (manifest.old.name, manifest.new.name));
+                self.active_analysis = Some(result);
+            }
         }
-        if let Some(result) = self.active_jadx.as_deref() {
+        if let Some(result) = self.active_analysis.as_deref() {
             let loaded = match self.mode {
                 ViewMode::SideBySide => load_consolidated_side_by_side(result),
                 ViewMode::Unified => load_consolidated_unified(result),
@@ -492,7 +701,7 @@ impl App {
                     self.error = None;
                 }
                 Err(error) => {
-                    self.content = Content::Message("Unable to display the JADX diff.".into());
+                    self.content = Content::Message("Unable to display the analyzer diff.".into());
                     self.error = Some(format!("{error:#}"));
                 }
             }
@@ -523,15 +732,22 @@ impl App {
         }
     }
 
-    fn cached_jadx_result(&self) -> Option<PathBuf> {
+    fn cached_analysis_result(&self) -> Option<PathBuf> {
         let entry = self.selected_entry()?;
-        let old_path = entry.old_path.as_deref().unwrap_or(&entry.path);
-        let new_path = entry.new_path.as_deref().unwrap_or(&entry.path);
-        if !is_jar_path(old_path) && !is_jar_path(new_path) {
-            return None;
+        if let Some(result) = entry
+            .old_sha256
+            .as_ref()
+            .or(entry.new_sha256.as_ref())
+            .and_then(|digest| self.manual_results.get(digest))
+        {
+            return Some(result.clone());
         }
-        let result = jadx_output_path(&self.result, entry);
-        result.join("manifest.json").is_file().then_some(result)
+        let old_digest = entry.old_sha256.as_deref()?;
+        let new_digest = entry.new_sha256.as_deref()?;
+        [AnalyzerKind::Jadx, AnalyzerKind::Ida]
+            .into_iter()
+            .map(|kind| analysis_output_path(&self.result, kind, old_digest, new_digest))
+            .find(|result| result.join("manifest.json").is_file())
     }
 
     fn load_side_by_side(&self, entry: &ManifestEntry) -> Result<Content> {
@@ -614,7 +830,7 @@ fn load_consolidated_side_by_side(result: &Path) -> Result<Content> {
     }
     if rows.is_empty() {
         Ok(Content::Message(
-            "JADX found no changed source files in this JAR pair.".into(),
+            "The analyzer found no changed text representations for this pair.".into(),
         ))
     } else {
         Ok(Content::SideBySide(rows))
@@ -649,7 +865,7 @@ fn load_consolidated_unified(result: &Path) -> Result<Content> {
     }
     if lines.is_empty() {
         Ok(Content::Message(
-            "JADX found no changed source files in this JAR pair.".into(),
+            "The analyzer found no changed text representations for this pair.".into(),
         ))
     } else {
         Ok(Content::Unified(lines))
@@ -718,16 +934,30 @@ fn blank_diff_row() -> DiffRow {
     }
 }
 
-fn jadx_output_path(result: &Path, entry: &ManifestEntry) -> PathBuf {
-    let key = crate::scan::sha(
-        format!(
-            "jadx-tui-v1\n{}\n{}\n",
-            entry.old_sha256.as_deref().unwrap_or("missing"),
-            entry.new_sha256.as_deref().unwrap_or("missing")
-        )
-        .as_bytes(),
-    );
-    result.join(".analysis/jadx").join(key)
+fn analysis_output_path(
+    result: &Path,
+    kind: AnalyzerKind,
+    old_digest: &str,
+    new_digest: &str,
+) -> PathBuf {
+    let protocol = match kind {
+        AnalyzerKind::Jadx => "jadx-tui-v1",
+        AnalyzerKind::Ida => "ida-tui-v1",
+    };
+    let key = crate::scan::sha(format!("{protocol}\n{old_digest}\n{new_digest}\n").as_bytes());
+    result.join(".analysis").join(kind.directory()).join(key)
+}
+
+fn analyzer_kind(path: &str, blob: &Path) -> Result<Option<AnalyzerKind>> {
+    if is_jar_path(path) {
+        return Ok(Some(AnalyzerKind::Jadx));
+    }
+    use std::io::Read;
+    let mut magic = [0_u8; 4];
+    let read = std::fs::File::open(blob)?.read(&mut magic)?;
+    let magic = &magic[..read];
+    let native = crate::classify::is_native_magic(magic);
+    Ok(native.then_some(AnalyzerKind::Ida))
 }
 
 fn is_jar_path(path: &str) -> bool {
@@ -928,6 +1158,28 @@ mod tests {
         result
     }
 
+    fn unmatched_jar_result_fixture() -> tempfile::TempDir {
+        let result = tempfile::tempdir().unwrap();
+        std::fs::create_dir(result.path().join("blobs")).unwrap();
+        std::fs::write(result.path().join("blobs/old-only"), b"old jar").unwrap();
+        std::fs::write(result.path().join("blobs/new-only"), b"new jar").unwrap();
+        std::fs::write(
+            result.path().join("manifest.json"),
+            r#"{
+              "schema_version":3,
+              "old":{"name":"old","sha256":"a"},
+              "new":{"name":"new","sha256":"b"},
+              "stats":{"added":1,"deleted":1,"modified":0,"unchanged":0,"renamed":0},
+              "entries":[
+                {"path":"a-old.jar","old_path":"a-old.jar","new_path":null,"kind":"binary","status":"deleted","renamed":false,"diff":null,"old_sha256":"old-only","new_sha256":null,"old_content":"blobs/old-only","new_content":null},
+                {"path":"z-new.jar","old_path":null,"new_path":"z-new.jar","kind":"binary","status":"added","renamed":false,"diff":null,"old_sha256":null,"new_sha256":"new-only","old_content":null,"new_content":"blobs/new-only"}
+              ]
+            }"#,
+        )
+        .unwrap();
+        result
+    }
+
     fn add_cached_jadx_result(parent: &Path) {
         let key = crate::scan::sha(b"jadx-tui-v1\nold\nnew\n");
         let result = parent.join(".analysis/jadx").join(key);
@@ -1053,7 +1305,7 @@ mod tests {
             .unwrap();
 
         assert!(app.analyzing);
-        let request = app.take_jadx_request().unwrap();
+        let request = app.take_analysis_request().unwrap();
         assert_eq!(request.old_name, "example-1.jar");
         assert_eq!(request.new_name, "example-2.jar");
         assert_eq!(
@@ -1112,10 +1364,11 @@ mod tests {
         add_cached_jadx_result(result.path());
         let mut app = App::load(result.path()).unwrap();
 
-        assert!(app.showing_jadx_diff());
+        assert!(app.showing_analysis());
         assert!(matches!(&app.content, Content::SideBySide(rows) if
             rows.iter().any(|row| row.old.text == "return 1;") &&
             rows.iter().any(|row| row.new.text == "return 2;")));
+        assert_eq!(app.diff_names(), ("example-1.jar", "example-2.jar"));
 
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .unwrap();
@@ -1126,6 +1379,35 @@ mod tests {
             .unwrap();
         assert!(!app.has_parent());
         assert_eq!(app.manifest.old.name, "old");
-        assert!(app.showing_jadx_diff());
+        assert!(app.showing_analysis());
+        assert_eq!(app.diff_names(), ("example-1.jar", "example-2.jar"));
+    }
+
+    #[test]
+    fn marks_and_pairs_unmatched_jars_for_analysis() {
+        let result = unmatched_jar_result_fixture();
+        let mut app = App::load(result.path()).unwrap();
+        app.handle_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE))
+            .unwrap();
+        assert!(app.is_marked_entry(0));
+
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+            .unwrap();
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        let request = app.take_analysis_request().unwrap();
+        assert_eq!(request.kind, AnalyzerKind::Jadx);
+        assert_eq!(request.old_name, "a-old.jar");
+        assert_eq!(request.new_name, "z-new.jar");
+    }
+
+    #[test]
+    fn recognizes_native_binaries_by_magic_not_filename() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), b"\x7fELFpayload").unwrap();
+        assert_eq!(
+            analyzer_kind("renamed-without-extension", file.path()).unwrap(),
+            Some(AnalyzerKind::Ida)
+        );
     }
 }

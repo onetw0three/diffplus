@@ -198,6 +198,7 @@ pub(crate) fn run_jadx_diff(
     old_name: &str,
     new_name: &str,
     destination: &Path,
+    configured_jadx: &Path,
 ) -> Result<()> {
     const MAX_FILE: u64 = 256 * 1024 * 1024;
     const MAX_EXPANDED: u64 = 2 * 1024 * 1024 * 1024;
@@ -208,7 +209,7 @@ pub(crate) fn run_jadx_diff(
     link_or_copy(old_blob, &old_input)?;
     link_or_copy(new_blob, &new_input)?;
 
-    let jadx = discover_jadx(Path::new("jadx"));
+    let jadx = discover_jadx(configured_jadx);
     let mode = JvmMode::Jadx;
     let options = LoadOptions {
         limits: ArchiveLimits {
@@ -323,26 +324,39 @@ fn hash_file_pair(old: &Path, new: &Path) -> Result<(String, String)> {
 }
 
 fn run_native_comparison(args: &Args, ida: &Path, script: &Path, diaphora: &Path) -> Result<bool> {
+    run_native_comparison_named(args, ida, script, diaphora, None, true)
+}
+
+fn run_native_comparison_named(
+    args: &Args,
+    ida: &Path,
+    script: &Path,
+    diaphora: &Path,
+    names: Option<(&str, &str)>,
+    emit_summary: bool,
+) -> Result<bool> {
     crate::progress::info("native inputs detected; starting IDA/Diaphora analysis");
     let old_digest = sha_file(args.old_input())?;
     let new_digest = sha_file(args.new_input())?;
     let mut old = Artifact {
-        name: args
-            .old_input()
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned(),
+        name: names.map(|(old, _)| old.to_owned()).unwrap_or_else(|| {
+            args.old_input()
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+        }),
         digest: old_digest.clone(),
         ..Default::default()
     };
     let mut new = Artifact {
-        name: args
-            .new_input()
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned(),
+        name: names.map(|(_, new)| new.to_owned()).unwrap_or_else(|| {
+            args.new_input()
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+        }),
         digest: new_digest.clone(),
         ..Default::default()
     };
@@ -356,7 +370,9 @@ fn run_native_comparison(args: &Args, ida: &Path, script: &Path, diaphora: &Path
             serde_json::to_vec_pretty(&crate::native::NativeResponse::empty())?,
         )?;
         output.commit()?;
-        print_summary(&summary, args.color);
+        if emit_summary {
+            print_summary(&summary, args.color);
+        }
         return Ok(false);
     }
 
@@ -413,7 +429,9 @@ fn run_native_comparison(args: &Args, ida: &Path, script: &Path, diaphora: &Path
         serde_json::to_vec_pretty(&response)?,
     )?;
     output.commit()?;
-    print_summary(&summary, args.color);
+    if emit_summary {
+        print_summary(&summary, args.color);
+    }
     Ok(native_changed
         || manifest.stats.added
             + manifest.stats.deleted
@@ -422,19 +440,74 @@ fn run_native_comparison(args: &Args, ida: &Path, script: &Path, diaphora: &Path
             > 0)
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_native_diff(
+    old_blob: &Path,
+    new_blob: &Path,
+    old_name: &str,
+    new_name: &str,
+    destination: &Path,
+    ida: &Path,
+    python: &Path,
+    script: &Path,
+    diaphora: &Path,
+    cache_dir: Option<&Path>,
+    no_cache: bool,
+) -> Result<()> {
+    if !ida.is_file() {
+        bail!("IDA executable not found: {}", ida.display());
+    }
+    if !script.is_file() {
+        bail!("Diaphora adapter script not found: {}", script.display());
+    }
+    if !diaphora.join("diaphora.py").is_file() || !diaphora.join("diaphora_ida.py").is_file() {
+        bail!(
+            "Diaphora directory must contain diaphora.py and diaphora_ida.py: {}",
+            diaphora.display()
+        );
+    }
+    let args = Args {
+        old: Some(old_blob.to_path_buf()),
+        new: Some(new_blob.to_path_buf()),
+        view: None,
+        tui: false,
+        output: destination.to_path_buf(),
+        color: Color::Never,
+        context: 3,
+        max_file_size: 256 * 1024 * 1024,
+        max_expanded_size: 2 * 1024 * 1024 * 1024,
+        max_depth: 1,
+        jvm: JvmMode::Raw,
+        jadx_path: PathBuf::from("jadx"),
+        cache_dir: cache_dir.map(Path::to_path_buf),
+        workspace_dir: None,
+        no_cache,
+        native: NativeMode::Ida,
+        ida_path: Some(ida.to_path_buf()),
+        diaphora_script: Some(script.to_path_buf()),
+        diaphora_path: Some(diaphora.to_path_buf()),
+        python_path: python.to_path_buf(),
+        strip_top_level: false,
+        quiet: true,
+    };
+    run_native_comparison_named(
+        &args,
+        ida,
+        script,
+        diaphora,
+        Some((old_name, new_name)),
+        false,
+    )?;
+    Ok(())
+}
+
 fn is_native_file(path: &Path) -> Result<bool> {
     if !path.is_file() {
         return Ok(false);
     }
     let mut magic = [0_u8; 4];
     let read = File::open(path)?.read(&mut magic)?;
-    Ok(read >= 2
-        && (&magic == b"\x7fELF"
-            || &magic[..2] == b"MZ"
-            || matches!(
-                u32::from_be_bytes(magic),
-                0xFEEDFACE | 0xFEEDFACF | 0xCEFAEDFE | 0xCFFAEDFE | 0xCAFEBABE | 0xBEBAFECA
-            )))
+    Ok(crate::classify::is_native_magic(&magic[..read]))
 }
 
 fn sanitize_component(value: &str) -> String {
@@ -875,5 +948,61 @@ mod tests {
             normalize_path(Path::new("/tmp/results/../input")),
             Path::new("/tmp/input")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn on_demand_native_diff_uses_supplied_toolchain() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let old = temp.path().join("old-blob");
+        let new = temp.path().join("new-blob");
+        std::fs::write(&old, b"\x7fELFold").unwrap();
+        std::fs::write(&new, b"\x7fELFnew").unwrap();
+
+        let ida = temp.path().join("fake-ida");
+        std::fs::write(
+            &ida,
+            "#!/bin/sh\npython3 -c 'import json,os; r=json.load(open(os.environ[\"ARTIFACT_DIFF_REQUEST\"])); open(r[\"export_database\"],\"wb\").write(b\"sqlite\")'\n",
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&ida).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&ida, permissions).unwrap();
+
+        let adapter = temp.path().join("adapter.py");
+        std::fs::write(
+            &adapter,
+            "import json,os\nr=json.load(open(os.environ['ARTIFACT_DIFF_REQUEST']))\nf={'stable_id':'main','old_address':1,'new_address':2,'old_name':'main','new_name':'main','status':'modified','similarity':0.9,'old_pseudocode':'int main() { return 1; }','new_pseudocode':'int main() { return 2; }'}\njson.dump({'protocol_version':1,'functions':[f]},open(r['output'],'w'))\n",
+        )
+        .unwrap();
+        let diaphora = temp.path().join("diaphora");
+        std::fs::create_dir(&diaphora).unwrap();
+        std::fs::write(diaphora.join("diaphora.py"), "").unwrap();
+        std::fs::write(diaphora.join("diaphora_ida.py"), "").unwrap();
+        let output = temp.path().join("result");
+
+        run_native_diff(
+            &old,
+            &new,
+            "legacy-service",
+            "replacement-service",
+            &output,
+            &ida,
+            Path::new("python3"),
+            &adapter,
+            &diaphora,
+            None,
+            true,
+        )
+        .unwrap();
+
+        let manifest: Manifest =
+            serde_json::from_slice(&std::fs::read(output.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(manifest.old.name, "legacy-service");
+        assert_eq!(manifest.new.name, "replacement-service");
+        assert_eq!(manifest.stats.modified, 1);
+        assert!(output.join("diffs/functions/main.c.diff").is_file());
     }
 }
