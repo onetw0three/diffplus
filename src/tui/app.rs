@@ -65,6 +65,14 @@ pub(super) struct TreeNode {
     pub(super) entry: Option<usize>,
 }
 
+pub(super) struct JadxRequest {
+    pub(super) old_blob: PathBuf,
+    pub(super) new_blob: PathBuf,
+    pub(super) old_name: String,
+    pub(super) new_name: String,
+    pub(super) output: PathBuf,
+}
+
 #[derive(Default)]
 struct Branch {
     directories: BTreeMap<String, Branch>,
@@ -87,6 +95,9 @@ pub(super) struct App {
     pub(super) horizontal_scroll: u16,
     pub(super) content: Content,
     pub(super) error: Option<String>,
+    parents: Vec<PathBuf>,
+    pending_jadx: Option<JadxRequest>,
+    pub(super) analyzing: bool,
 }
 
 impl App {
@@ -118,6 +129,9 @@ impl App {
             horizontal_scroll: 0,
             content: Content::Message(String::new()),
             error: None,
+            parents: Vec::new(),
+            pending_jadx: None,
+            analyzing: false,
         };
         app.select_first_file();
         app.refresh_content();
@@ -175,6 +189,9 @@ impl App {
             }
             return Ok(false);
         }
+        if self.analyzing {
+            return Ok(false);
+        }
 
         match key.code {
             KeyCode::Char('q') => return Ok(true),
@@ -187,8 +204,10 @@ impl App {
             }
             KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
             KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
-            KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Right => self.activate_selected(false),
+            KeyCode::Enter => self.activate_or_analyze()?,
+            KeyCode::Char(' ') | KeyCode::Right => self.activate_selected(false),
             KeyCode::Left => self.activate_selected(true),
+            KeyCode::Backspace => self.open_parent()?,
             KeyCode::PageDown => self.vertical_scroll = self.vertical_scroll.saturating_add(20),
             KeyCode::PageUp => self.vertical_scroll = self.vertical_scroll.saturating_sub(20),
             KeyCode::Char('J') => self.vertical_scroll = self.vertical_scroll.saturating_add(1),
@@ -214,6 +233,25 @@ impl App {
             _ => {}
         }
         Ok(false)
+    }
+
+    pub(super) fn take_jadx_request(&mut self) -> Option<JadxRequest> {
+        self.pending_jadx.take()
+    }
+
+    pub(super) fn finish_jadx(&mut self, request: JadxRequest, result: Result<()>) {
+        self.analyzing = false;
+        match result.and_then(|()| self.open_child(&request.output)) {
+            Ok(()) => {}
+            Err(error) => {
+                self.content = Content::Message("JADX analysis failed.".into());
+                self.error = Some(format!("{error:#}"));
+            }
+        }
+    }
+
+    pub(super) fn has_parent(&self) -> bool {
+        !self.parents.is_empty()
     }
 
     pub(super) fn handle_mouse(&mut self, mouse: MouseEvent, width: u16, height: u16) {
@@ -339,6 +377,86 @@ impl App {
         }
     }
 
+    fn activate_or_analyze(&mut self) -> Result<()> {
+        let nodes = self.visible_nodes();
+        let Some(node) = nodes.get(self.selected) else {
+            return Ok(());
+        };
+        if node.directory {
+            self.activate_selected(false);
+            return Ok(());
+        }
+
+        let Some(entry) = node
+            .entry
+            .and_then(|index| self.manifest.entries.get(index))
+        else {
+            return Ok(());
+        };
+        let old_path = entry.old_path.as_deref().unwrap_or(&entry.path);
+        let new_path = entry.new_path.as_deref().unwrap_or(&entry.path);
+        if !is_jar_path(old_path) && !is_jar_path(new_path) {
+            return Ok(());
+        }
+        let (Some(old_content), Some(new_content)) =
+            (entry.old_content.as_deref(), entry.new_content.as_deref())
+        else {
+            self.error = Some(
+                "JADX requires a changed JAR present on both sides; regenerate older results with this version"
+                    .into(),
+            );
+            return Ok(());
+        };
+
+        let key = crate::scan::sha(
+            format!(
+                "jadx-tui-v1\n{}\n{}\n",
+                entry.old_sha256.as_deref().unwrap_or("missing"),
+                entry.new_sha256.as_deref().unwrap_or("missing")
+            )
+            .as_bytes(),
+        );
+        let output = self.result.join(".analysis/jadx").join(key);
+        if output.join("manifest.json").is_file() {
+            return self.open_child(&output);
+        }
+
+        let request = JadxRequest {
+            old_blob: self.resolve_relative(old_content)?,
+            new_blob: self.resolve_relative(new_content)?,
+            old_name: file_name(old_path),
+            new_name: file_name(new_path),
+            output,
+        };
+        self.content = Content::Message(
+            "Running JADX source analysis…\n\nThis result will be reused the next time you press Enter."
+                .into(),
+        );
+        self.error = None;
+        self.analyzing = true;
+        self.pending_jadx = Some(request);
+        Ok(())
+    }
+
+    fn open_child(&mut self, result: &Path) -> Result<()> {
+        let mut child = Self::load(result)?;
+        child.parents = std::mem::take(&mut self.parents);
+        child.parents.push(self.result.clone());
+        *self = child;
+        Ok(())
+    }
+
+    fn open_parent(&mut self) -> Result<()> {
+        let Some(result) = self.parents.pop() else {
+            return Ok(());
+        };
+        let remaining = std::mem::take(&mut self.parents);
+        let mut parent = Self::load(&result)?;
+        parent.parents = remaining;
+        *self = parent;
+        Ok(())
+    }
+
     fn after_tree_change(&mut self) {
         self.selected = 0;
         self.select_first_file();
@@ -424,6 +542,21 @@ impl App {
     }
 
     fn read_relative(&self, relative: &str) -> Result<String> {
+        let resolved = self.resolve_relative(relative)?;
+        let size = std::fs::metadata(&resolved)?.len();
+        if size > MAX_VIEW_BYTES {
+            bail!(
+                "{} is {} MiB; the viewer limit is {} MiB",
+                resolved.display(),
+                size / 1024 / 1024,
+                MAX_VIEW_BYTES / 1024 / 1024
+            );
+        }
+        let bytes = std::fs::read(&resolved)?;
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    fn resolve_relative(&self, relative: &str) -> Result<PathBuf> {
         let relative = Path::new(relative);
         if relative.is_absolute()
             || relative
@@ -433,26 +566,29 @@ impl App {
             bail!("unsafe result path: {}", relative.display());
         }
         let path = self.result.join(relative);
-        let size = std::fs::metadata(&path)
-            .with_context(|| format!("reading metadata for {}", path.display()))?
-            .len();
-        if size > MAX_VIEW_BYTES {
-            bail!(
-                "{} is {} MiB; the viewer limit is {} MiB",
-                path.display(),
-                size / 1024 / 1024,
-                MAX_VIEW_BYTES / 1024 / 1024
-            );
-        }
         let root = std::fs::canonicalize(&self.result)?;
         let resolved = std::fs::canonicalize(&path)
             .with_context(|| format!("resolving {}", path.display()))?;
         if !resolved.starts_with(root) {
             bail!("result path escapes its directory: {}", path.display());
         }
-        let bytes = std::fs::read(&resolved)?;
-        Ok(String::from_utf8_lossy(&bytes).into_owned())
+        Ok(resolved)
     }
+}
+
+fn is_jar_path(path: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("jar"))
+}
+
+fn file_name(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn percent_of(value: u16, percent: u16) -> u16 {
@@ -605,6 +741,39 @@ mod tests {
         result
     }
 
+    fn jar_result_fixture() -> tempfile::TempDir {
+        let result = tempfile::tempdir().unwrap();
+        std::fs::create_dir(result.path().join("blobs")).unwrap();
+        std::fs::write(result.path().join("blobs/old-jar"), b"old jar").unwrap();
+        std::fs::write(result.path().join("blobs/new-jar"), b"new jar").unwrap();
+        std::fs::write(
+            result.path().join("manifest.json"),
+            r#"{
+              "schema_version": 3,
+              "old": {"name": "old", "sha256": "a"},
+              "new": {"name": "new", "sha256": "b"},
+              "stats": {"added": 0, "deleted": 0, "modified": 1, "unchanged": 0, "renamed": 1},
+              "entries": [{
+                "path":"lib/example-2.jar",
+                "old_path":"lib/example-1.jar",
+                "new_path":"lib/example-2.jar",
+                "kind":"binary",
+                "status":"modified",
+                "renamed":true,
+                "diff":"diffs/example.diff",
+                "old_sha256":"old",
+                "new_sha256":"new",
+                "old_size":7,
+                "new_size":7,
+                "old_content":"blobs/old-jar",
+                "new_content":"blobs/new-jar"
+              }]
+            }"#,
+        )
+        .unwrap();
+        result
+    }
+
     #[test]
     fn aligns_replaced_lines() {
         let rows = aligned_diff("one\ntwo\n", "one\nthree\n");
@@ -695,5 +864,22 @@ mod tests {
         app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 90), 100, 30);
         app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 90), 100, 30);
         assert_eq!(app.diff_percent, 80);
+    }
+
+    #[test]
+    fn enter_queues_jadx_for_a_changed_jar() {
+        let result = jar_result_fixture();
+        let mut app = App::load(result.path()).unwrap();
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+
+        assert!(app.analyzing);
+        let request = app.take_jadx_request().unwrap();
+        assert_eq!(request.old_name, "example-1.jar");
+        assert_eq!(request.new_name, "example-2.jar");
+        assert_eq!(
+            std::fs::read(request.old_blob).unwrap(),
+            b"old jar".as_slice()
+        );
     }
 }

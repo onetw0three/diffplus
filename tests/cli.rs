@@ -1,4 +1,5 @@
 use assert_cmd::Command;
+use predicates::prelude::PredicateBooleanExt;
 use std::fs;
 
 fn fixture() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
@@ -81,6 +82,70 @@ fn identical_archives_reuse_one_content_scan() {
         .assert()
         .code(0)
         .stderr(predicates::str::contains("reusing the old content scan"));
+}
+
+#[test]
+fn default_mode_retains_changed_nested_jars_for_on_demand_analysis() {
+    use std::io::{Cursor, Write};
+
+    fn jar_bytes(class: &[u8]) -> Vec<u8> {
+        let mut jar = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        jar.start_file(
+            "example/Main.class",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        jar.write_all(class).unwrap();
+        jar.finish().unwrap().into_inner()
+    }
+
+    fn write_tar(path: &std::path::Path, member: &str, bytes: &[u8]) {
+        let mut archive = tar::Builder::new(fs::File::create(path).unwrap());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        archive.append_data(&mut header, member, bytes).unwrap();
+        archive.finish().unwrap();
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let old = temp.path().join("old.tar");
+    let new = temp.path().join("new.tar");
+    let output = temp.path().join("result");
+    write_tar(
+        &old,
+        "lib/example-26.0.3.76224.jar",
+        &jar_bytes(b"old class"),
+    );
+    write_tar(
+        &new,
+        "lib/example-26.0.4-PO-4560.76507.jar",
+        &jar_bytes(b"new class"),
+    );
+
+    Command::cargo_bin("artifact-diff")
+        .unwrap()
+        .arg(&old)
+        .arg(&new)
+        .arg("--output")
+        .arg(&output)
+        .assert()
+        .code(1)
+        .stderr(predicates::str::contains("running JADX").not());
+
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("manifest.json")).unwrap()).unwrap();
+    let entries = manifest["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["status"], "modified");
+    assert_eq!(entries[0]["renamed"], true);
+    assert!(output
+        .join(entries[0]["old_content"].as_str().unwrap())
+        .is_file());
+    assert!(output
+        .join(entries[0]["new_content"].as_str().unwrap())
+        .is_file());
 }
 
 #[test]

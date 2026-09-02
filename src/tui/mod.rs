@@ -19,8 +19,39 @@ pub(crate) fn run(result: &Path) -> Result<()> {
 
     let mut app = app::App::load(result)?;
     let mut terminal = TerminalSession::start()?;
+    let mut jadx_job: Option<(
+        app::JadxRequest,
+        std::thread::JoinHandle<anyhow::Result<()>>,
+    )> = None;
     loop {
+        if jadx_job
+            .as_ref()
+            .is_some_and(|(_, handle)| handle.is_finished())
+        {
+            let (request, handle) = jadx_job.take().expect("finished JADX job exists");
+            let result = handle
+                .join()
+                .map_err(|_| anyhow::anyhow!("JADX analysis thread panicked"))
+                .and_then(|result| result);
+            crate::progress::set_enabled(true);
+            app.finish_jadx(request, result);
+        }
         terminal.terminal.draw(|frame| view::render(frame, &app))?;
+        if jadx_job.is_none() {
+            if let Some(request) = app.take_jadx_request() {
+                let old_blob = request.old_blob.clone();
+                let new_blob = request.new_blob.clone();
+                let old_name = request.old_name.clone();
+                let new_name = request.new_name.clone();
+                let output = request.output.clone();
+                crate::progress::set_enabled(false);
+                let handle = std::thread::spawn(move || {
+                    crate::core::run_jadx_diff(&old_blob, &new_blob, &old_name, &new_name, &output)
+                });
+                jadx_job = Some((request, handle));
+                continue;
+            }
+        }
         if event::poll(Duration::from_millis(250))? {
             match event::read()? {
                 Event::Key(key) if app.handle_key(key)? => break,

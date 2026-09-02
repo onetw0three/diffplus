@@ -59,12 +59,13 @@ The viewer provides a collapsible path explorer, path search, status filters,
 aligned side-by-side text, and the saved unified diff. It reads the selected
 blob only when needed and refuses individual viewer payloads above 32 MiB.
 Press `q` to quit, `/` to search, arrow keys or `j`/`k` to navigate, `Enter` to
-expand or collapse directories, `Space` to toggle a selected folder, and the
-mouse wheel, `PageUp`/`PageDown`, or `J`/`K` to scroll diffs. Mouse clicks select
-files and toggle folders. Drag the Explorer/editor or before/after vertical
-divider to resize those panels. Use `[`/`]` to pan, `Tab` to switch views, and
-`1`–`4` to toggle status classes. The editor header shows before/after paths and
-sizes.
+expand or collapse directories or analyze a changed JAR with JADX, `Space` to
+toggle a selected folder, and the mouse wheel, `PageUp`/`PageDown`, or `J`/`K`
+to scroll diffs. Mouse clicks select files and toggle folders. Drag the
+Explorer/editor or before/after vertical divider to resize those panels. Use
+`[`/`]` to pan, `Tab` to switch views, and `1`–`4` to toggle status classes.
+Press `Backspace` to return from a generated JADX source comparison. The editor
+header shows before/after paths and sizes.
 
 Rename detection first pairs unique identical-content moves, then unique paths
 after normalizing semantic versions and long build numbers. Ambiguous groups
@@ -81,8 +82,11 @@ IDA/Diaphora export databases are cached by content and analyzer fingerprint;
 analysis data, so caching remains opt-in. Identical top-level archives are
 hashed and scanned only once even when their filenames differ.
 
-JADX is optional in automatic mode. To require it for JAR inputs, including
-JARs nested in supported containers:
+JVM decompilation is disabled during the initial comparison by default, keeping
+large archive scans fast. Changed JAR payloads are retained in the result; press
+`Enter` on one in the TUI to generate and open a cached source-level comparison.
+To require JADX eagerly for JAR inputs, including JARs nested in supported
+containers:
 
 ```bash
 cargo run -- OLD.jar NEW.jar \
@@ -90,6 +94,10 @@ cargo run -- OLD.jar NEW.jar \
   --jadx-path /path/to/jadx \
   --cache-dir .cache/artifact-diff
 ```
+
+JADX discovery searches `PATH`, `$JADX_HOME/bin/jadx`,
+`/opt/jadx/bin/jadx`, `/usr/local/bin/jadx`, and `~/tools/bin/jadx`. Use
+`--jadx-path` to override discovery explicitly.
 
 Exit codes are `0` for no differences, `1` when differences are found, and `2`
 for fatal input or analyzer errors.

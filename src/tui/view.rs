@@ -268,9 +268,14 @@ fn render_unified(frame: &mut Frame<'_>, app: &App, lines: &[UnifiedLine], area:
 }
 
 fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let text = app.error.as_deref().unwrap_or(
-        " q quit  / search  Space folder  wheel/PgUp/PgDn/J/K scroll  drag │ resize  Tab view  1–4 filters ",
-    );
+    let default_text = if app.analyzing {
+        " JADX is analyzing the selected JAR… "
+    } else if app.has_parent() {
+        " Backspace parent  q quit  / search  wheel/PgUp/PgDn/J/K scroll  Tab view  1–4 filters "
+    } else {
+        " q quit  / search  Enter JAR diff  Space folder  wheel/PgUp/PgDn/J/K scroll  Tab view  1–4 filters "
+    };
+    let text = app.error.as_deref().unwrap_or(default_text);
     let style = if app.error.is_some() {
         Style::default().fg(Color::White).bg(RED)
     } else {

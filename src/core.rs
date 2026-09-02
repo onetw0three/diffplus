@@ -87,6 +87,14 @@ pub fn run(args: Args) -> Result<bool> {
             bail!("native analysis was requested but IDA configuration is incomplete");
         }
     }
+    let jadx_path = if matches!(args.jvm, JvmMode::Raw | JvmMode::Off) {
+        args.jadx_path.clone()
+    } else {
+        discover_jadx(&args.jadx_path)
+    };
+    if jadx_path != args.jadx_path && !matches!(args.jvm, JvmMode::Raw | JvmMode::Off) {
+        crate::progress::info(format!("discovered JADX at {}", jadx_path.display()));
+    }
     let load_options = LoadOptions {
         limits: ArchiveLimits {
             max_file: args.max_file_size,
@@ -97,7 +105,7 @@ pub fn run(args: Args) -> Result<bool> {
         jadx: JadxOptions {
             max_file: args.max_file_size,
             mode: &args.jvm,
-            path: &args.jadx_path,
+            path: &jadx_path,
             cache_dir: args.cache_dir.as_deref(),
             no_cache: args.no_cache,
         },
@@ -181,6 +189,107 @@ pub fn run(args: Args) -> Result<bool> {
         + manifest.stats.modified
         + manifest.stats.renamed
         > 0)
+}
+
+/// Builds a persisted source-level comparison for a JAR pair retained by the TUI.
+pub(crate) fn run_jadx_diff(
+    old_blob: &Path,
+    new_blob: &Path,
+    old_name: &str,
+    new_name: &str,
+    destination: &Path,
+) -> Result<()> {
+    const MAX_FILE: u64 = 256 * 1024 * 1024;
+    const MAX_EXPANDED: u64 = 2 * 1024 * 1024 * 1024;
+
+    let inputs = create_workspace(None, "on-demand-jadx")?;
+    let old_input = inputs.path().join("old.jar");
+    let new_input = inputs.path().join("new.jar");
+    link_or_copy(old_blob, &old_input)?;
+    link_or_copy(new_blob, &new_input)?;
+
+    let jadx = discover_jadx(Path::new("jadx"));
+    let mode = JvmMode::Jadx;
+    let options = LoadOptions {
+        limits: ArchiveLimits {
+            max_file: MAX_FILE,
+            max_expanded: MAX_EXPANDED,
+            max_depth: 1,
+        },
+        strip_top_level: false,
+        jadx: JadxOptions {
+            max_file: MAX_FILE,
+            mode: &mode,
+            path: &jadx,
+            cache_dir: None,
+            no_cache: true,
+        },
+        workspace_dir: None,
+    };
+
+    let (old_digest, new_digest) = hash_file_pair(&old_input, &new_input)?;
+    let mut old = load_artifact(&old_input, &options, Some(&old_digest))?;
+    old.name = old_name.to_owned();
+    let mut new = if old_digest == new_digest {
+        Artifact {
+            name: new_name.to_owned(),
+            digest: old.digest.clone(),
+            entries: old.entries.clone(),
+            _workspace: None,
+        }
+    } else {
+        load_artifact(&new_input, &options, Some(&new_digest))?
+    };
+    new.name = new_name.to_owned();
+
+    let output = crate::output::OutputTransaction::new(destination)?;
+    let (manifest, summary) = compare(&old, &new, output.path(), 3)?;
+    crate::output::write_results(output.path(), &manifest, &summary)?;
+    output.commit()
+}
+
+fn link_or_copy(source: &Path, destination: &Path) -> Result<()> {
+    std::fs::hard_link(source, destination)
+        .or_else(|_| std::fs::copy(source, destination).map(|_| ()))
+        .with_context(|| {
+            format!(
+                "materializing retained JAR {} as {}",
+                source.display(),
+                destination.display()
+            )
+        })
+}
+
+fn discover_jadx(configured: &Path) -> PathBuf {
+    if configured.is_file() || configured.components().count() > 1 {
+        return configured.to_path_buf();
+    }
+    if let Some(path) = std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|directory| directory.join(configured))
+            .find(|candidate| candidate.is_file())
+    }) {
+        return path;
+    }
+    if configured != Path::new("jadx") {
+        return configured.to_path_buf();
+    }
+
+    let mut candidates = Vec::new();
+    if let Some(root) = std::env::var_os("JADX_HOME") {
+        candidates.push(PathBuf::from(root).join("bin/jadx"));
+    }
+    candidates.extend([
+        PathBuf::from("/opt/jadx/bin/jadx"),
+        PathBuf::from("/usr/local/bin/jadx"),
+    ]);
+    if let Some(home) = std::env::var_os("HOME") {
+        candidates.push(PathBuf::from(home).join("tools/bin/jadx"));
+    }
+    candidates
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+        .unwrap_or_else(|| configured.to_path_buf())
 }
 
 fn load_artifact_logged(

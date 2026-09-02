@@ -34,7 +34,7 @@ pub struct Args {
     /// Archive expansion levels, including the top-level archive (minimum 1).
     #[arg(long, default_value_t = 1)]
     pub max_depth: usize,
-    #[arg(long, value_enum, default_value_t = JvmMode::Auto)]
+    #[arg(long, value_enum, default_value_t = JvmMode::Raw)]
     pub jvm: JvmMode,
     #[arg(long, default_value = "jadx")]
     pub jadx_path: PathBuf,

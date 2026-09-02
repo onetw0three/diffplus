@@ -63,8 +63,8 @@ pub(crate) fn compare(
             std::fs::write(destination, make_diff(old_path, new_path, a, b, context)?)?;
             Some(relative)
         };
-        let old_content = snapshot_text(out, a, status)?;
-        let new_content = snapshot_text(out, b, status)?;
+        let old_content = snapshot_content(out, a, status, old_path)?;
+        let new_content = snapshot_content(out, b, status, new_path)?;
         entries.push(ManifestEntry {
             path: path.to_string(),
             old_path: old_path.map(str::to_owned),
@@ -226,11 +226,46 @@ fn versionless_path(path: &str) -> String {
             index += character.len_utf8();
         }
     }
+    collapse_qualified_build(&output)
+}
+
+fn collapse_qualified_build(path: &str) -> String {
+    const VERSION: &str = "{version}";
+    let mut output = path.to_owned();
+    let mut search_from = 0;
+    while let Some(first) = output[search_from..].find(VERSION) {
+        let first = search_from + first;
+        let qualifier_start = first + VERSION.len();
+        let Some(second_offset) = output[qualifier_start..].find(VERSION) else {
+            break;
+        };
+        let second = qualifier_start + second_offset;
+        let qualifier = &output[qualifier_start..second];
+        if qualifier.len() >= 3
+            && qualifier.starts_with('-')
+            && qualifier.ends_with('-')
+            && qualifier[1..qualifier.len() - 1]
+                .chars()
+                .all(|character| character.is_ascii_alphabetic() || character == '-')
+        {
+            output.replace_range(qualifier_start..second + VERSION.len(), "");
+            search_from = first + VERSION.len();
+        } else {
+            search_from = qualifier_start;
+        }
+    }
     output
 }
 
-fn snapshot_text(out: &Path, entry: Option<&Entry>, status: &str) -> Result<Option<String>> {
-    let Some(entry) = entry.filter(|entry| entry.kind == "text" && status != "unchanged") else {
+fn snapshot_content(
+    out: &Path,
+    entry: Option<&Entry>,
+    status: &str,
+    logical_path: Option<&str>,
+) -> Result<Option<String>> {
+    let retain_for_viewer =
+        entry.is_some_and(|entry| entry.kind == "text") || logical_path.is_some_and(is_jar_path);
+    let Some(entry) = entry.filter(|_| status != "unchanged" && retain_for_viewer) else {
         return Ok(None);
     };
     let relative = Path::new("blobs").join(&entry.digest);
@@ -240,6 +275,13 @@ fn snapshot_text(out: &Path, entry: Option<&Entry>, status: &str) -> Result<Opti
         entry.content.copy_to(&destination)?;
     }
     Ok(Some(relative.to_string_lossy().into_owned()))
+}
+
+fn is_jar_path(path: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("jar"))
 }
 
 fn make_diff(
@@ -334,6 +376,10 @@ mod tests {
             "lib/web-api-{version}.jar"
         );
         assert_eq!(versionless_path("file2.txt"), "file2.txt");
+        assert_eq!(
+            versionless_path("lib/web-api-26.0.4-PO-4560.76507.jar"),
+            "lib/web-api-{version}.jar"
+        );
     }
 
     #[test]
