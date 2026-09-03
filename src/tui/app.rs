@@ -68,6 +68,7 @@ pub(super) struct TreeNode {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum AnalyzerKind {
+    Text,
     Jadx,
     Ida,
 }
@@ -75,6 +76,7 @@ pub(super) enum AnalyzerKind {
 impl AnalyzerKind {
     pub(super) fn label(self) -> &'static str {
         match self {
+            Self::Text => "Text",
             Self::Jadx => "JADX",
             Self::Ida => "IDA/Diaphora",
         }
@@ -82,6 +84,7 @@ impl AnalyzerKind {
 
     fn directory(self) -> &'static str {
         match self {
+            Self::Text => "text",
             Self::Jadx => "jadx",
             Self::Ida => "ida",
         }
@@ -486,8 +489,7 @@ impl App {
 
         if let Some(marked) = self.marked.clone() {
             let Some(current) = self.one_sided_candidate(entry)? else {
-                self.error =
-                    Some("Select an unmatched added or deleted analyzer-compatible file".into());
+                self.error = Some("Select an unmatched added or deleted comparable file".into());
                 return Ok(());
             };
             if current.side == marked.side {
@@ -523,7 +525,8 @@ impl App {
             return Ok(());
         };
         let Some(candidate) = self.one_sided_candidate(entry)? else {
-            self.error = Some("Only unmatched JARs or native binaries can be marked".into());
+            self.error =
+                Some("Only unmatched text files, JARs, or native binaries can be marked".into());
             return Ok(());
         };
         if self.marked.as_ref().is_some_and(|marked| {
@@ -632,8 +635,10 @@ impl App {
                 _ => return Ok(None),
             };
         let blob = self.resolve_relative(content)?;
-        let Some(kind) = analyzer_kind(path, &blob)? else {
-            return Ok(None);
+        let kind = match analyzer_kind(path, &blob)? {
+            Some(kind) => kind,
+            None if entry.kind == "text" => AnalyzerKind::Text,
+            None => return Ok(None),
         };
         Ok(Some(MarkedFile {
             side,
@@ -744,7 +749,7 @@ impl App {
         }
         let old_digest = entry.old_sha256.as_deref()?;
         let new_digest = entry.new_sha256.as_deref()?;
-        [AnalyzerKind::Jadx, AnalyzerKind::Ida]
+        [AnalyzerKind::Text, AnalyzerKind::Jadx, AnalyzerKind::Ida]
             .into_iter()
             .map(|kind| analysis_output_path(&self.result, kind, old_digest, new_digest))
             .find(|result| result.join("manifest.json").is_file())
@@ -811,7 +816,7 @@ fn load_consolidated_side_by_side(result: &Path) -> Result<Content> {
         let new = read_optional_from(result, entry.new_content.as_deref())?;
         total_bytes += old.len() + new.len();
         if total_bytes > MAX_CONSOLIDATED_BYTES {
-            bail!("consolidated JADX diff exceeds 64 MiB");
+            bail!("consolidated comparison exceeds 64 MiB");
         }
         rows.push(DiffRow {
             old: DiffCell {
@@ -830,7 +835,7 @@ fn load_consolidated_side_by_side(result: &Path) -> Result<Content> {
     }
     if rows.is_empty() {
         Ok(Content::Message(
-            "The analyzer found no changed text representations for this pair.".into(),
+            "The comparison produced no changed text representations for this pair.".into(),
         ))
     } else {
         Ok(Content::SideBySide(rows))
@@ -852,7 +857,7 @@ fn load_consolidated_unified(result: &Path) -> Result<Content> {
         let text = read_relative_from(result, diff)?;
         total_bytes += text.len();
         if total_bytes > MAX_CONSOLIDATED_BYTES {
-            bail!("consolidated JADX diff exceeds 64 MiB");
+            bail!("consolidated comparison exceeds 64 MiB");
         }
         lines.extend(text.lines().map(|line| UnifiedLine {
             kind: classify_unified(line),
@@ -865,7 +870,7 @@ fn load_consolidated_unified(result: &Path) -> Result<Content> {
     }
     if lines.is_empty() {
         Ok(Content::Message(
-            "The analyzer found no changed text representations for this pair.".into(),
+            "The comparison produced no changed text representations for this pair.".into(),
         ))
     } else {
         Ok(Content::Unified(lines))
@@ -941,6 +946,7 @@ fn analysis_output_path(
     new_digest: &str,
 ) -> PathBuf {
     let protocol = match kind {
+        AnalyzerKind::Text => "text-tui-v1",
         AnalyzerKind::Jadx => "jadx-tui-v1",
         AnalyzerKind::Ida => "ida-tui-v1",
     };
@@ -1180,6 +1186,28 @@ mod tests {
         result
     }
 
+    fn unmatched_text_result_fixture() -> tempfile::TempDir {
+        let result = tempfile::tempdir().unwrap();
+        std::fs::create_dir(result.path().join("blobs")).unwrap();
+        std::fs::write(result.path().join("blobs/old-text"), "before\n").unwrap();
+        std::fs::write(result.path().join("blobs/new-text"), "after\n").unwrap();
+        std::fs::write(
+            result.path().join("manifest.json"),
+            r#"{
+              "schema_version":3,
+              "old":{"name":"old","sha256":"a"},
+              "new":{"name":"new","sha256":"b"},
+              "stats":{"added":1,"deleted":1,"modified":0,"unchanged":0,"renamed":0},
+              "entries":[
+                {"path":"legacy.txt","old_path":"legacy.txt","new_path":null,"kind":"text","status":"deleted","renamed":false,"diff":null,"old_sha256":"old-text","new_sha256":null,"old_size":7,"new_size":null,"old_content":"blobs/old-text","new_content":null},
+                {"path":"replacement.txt","old_path":null,"new_path":"replacement.txt","kind":"text","status":"added","renamed":false,"diff":null,"old_sha256":null,"new_sha256":"new-text","old_size":null,"new_size":6,"old_content":null,"new_content":"blobs/new-text"}
+              ]
+            }"#,
+        )
+        .unwrap();
+        result
+    }
+
     fn add_cached_jadx_result(parent: &Path) {
         let key = crate::scan::sha(b"jadx-tui-v1\nold\nnew\n");
         let result = parent.join(".analysis/jadx").join(key);
@@ -1399,6 +1427,46 @@ mod tests {
         assert_eq!(request.kind, AnalyzerKind::Jadx);
         assert_eq!(request.old_name, "a-old.jar");
         assert_eq!(request.new_name, "z-new.jar");
+    }
+
+    #[test]
+    fn marks_and_pairs_unmatched_text_files() {
+        let result = unmatched_text_result_fixture();
+        let mut app = App::load(result.path()).unwrap();
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE))
+            .unwrap();
+        assert!(app.is_marked_entry(0));
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+            .unwrap();
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+
+        let request = app.take_analysis_request().unwrap();
+        assert_eq!(request.kind, AnalyzerKind::Text);
+        assert_eq!(request.old_name, "legacy.txt");
+        assert_eq!(request.new_name, "replacement.txt");
+        crate::core::run_text_diff(
+            &request.old_blob,
+            &request.new_blob,
+            &request.old_name,
+            &request.new_name,
+            &request.output,
+        )
+        .unwrap();
+        app.finish_analysis(request, Ok(()));
+
+        assert!(app.has_parent());
+        assert_eq!(app.manifest.entries.len(), 1);
+        assert_eq!(app.manifest.entries[0].status, "modified");
+        assert_eq!(
+            app.manifest.entries[0].old_path.as_deref(),
+            Some("legacy.txt")
+        );
+        assert_eq!(
+            app.manifest.entries[0].new_path.as_deref(),
+            Some("replacement.txt")
+        );
     }
 
     #[test]

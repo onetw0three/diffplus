@@ -9,9 +9,39 @@ pub(crate) fn compare(
     out: &Path,
     context: usize,
 ) -> Result<(Manifest, String)> {
+    compare_pairs(old, new, out, context, pair_entries(old, new))
+}
+
+pub(crate) fn compare_forced_pair(
+    old: &Artifact,
+    new: &Artifact,
+    old_path: &str,
+    new_path: &str,
+    out: &Path,
+    context: usize,
+) -> Result<(Manifest, String)> {
+    compare_pairs(
+        old,
+        new,
+        out,
+        context,
+        vec![EntryPair {
+            old_path: Some(old_path),
+            new_path: Some(new_path),
+        }],
+    )
+}
+
+fn compare_pairs(
+    old: &Artifact,
+    new: &Artifact,
+    out: &Path,
+    context: usize,
+    pairs: Vec<EntryPair<'_>>,
+) -> Result<(Manifest, String)> {
     let mut stats = Stats::default();
     let mut entries = Vec::new();
-    for pair in pair_entries(old, new) {
+    for pair in pairs {
         let old_path = pair.old_path;
         let new_path = pair.new_path;
         let path = new_path.or(old_path).expect("entry pair has a path");
@@ -380,6 +410,30 @@ mod tests {
             );
         }
         artifact
+    }
+
+    #[test]
+    fn forced_pair_compares_differently_named_text_files() {
+        let temporary = tempfile::tempdir().unwrap();
+        let old = artifact(temporary.path(), "old", &[("legacy.txt", "before\n")]);
+        let new = artifact(temporary.path(), "new", &[("replacement.txt", "after\n")]);
+        let output = temporary.path().join("result");
+
+        let (manifest, _) =
+            compare_forced_pair(&old, &new, "legacy.txt", "replacement.txt", &output, 3).unwrap();
+
+        assert_eq!(manifest.entries.len(), 1);
+        assert_eq!(manifest.entries[0].status, "modified");
+        assert_eq!(manifest.entries[0].old_path.as_deref(), Some("legacy.txt"));
+        assert_eq!(
+            manifest.entries[0].new_path.as_deref(),
+            Some("replacement.txt")
+        );
+        let diff =
+            std::fs::read_to_string(output.join(manifest.entries[0].diff.as_deref().unwrap()))
+                .unwrap();
+        assert!(diff.contains("--- a/legacy.txt"));
+        assert!(diff.contains("+++ b/replacement.txt"));
     }
 
     #[test]

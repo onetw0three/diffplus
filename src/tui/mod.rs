@@ -77,6 +77,9 @@ pub(crate) fn run(result: &Path, options: AnalyzerOptions) -> Result<()> {
                 let options = options.clone();
                 crate::progress::set_enabled(false);
                 let handle = std::thread::spawn(move || match kind {
+                    app::AnalyzerKind::Text => crate::core::run_text_diff(
+                        &old_blob, &new_blob, &old_name, &new_name, &output,
+                    ),
                     app::AnalyzerKind::Jadx => crate::core::run_jadx_diff(
                         &old_blob,
                         &new_blob,

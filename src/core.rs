@@ -1,5 +1,5 @@
 use crate::cli::{Args, Color, JvmMode, NativeMode};
-use crate::diff::{compare, render_summary};
+use crate::diff::{compare, compare_forced_pair, render_summary};
 use crate::model::*;
 use crate::scan::{
     collect_dir, collect_path, sha, sha_file, strip_common_top_level, ArchiveLimits, ContentStore,
@@ -255,6 +255,41 @@ pub(crate) fn run_jadx_diff(
 
     let output = crate::output::OutputTransaction::new(destination)?;
     let (manifest, summary) = compare(&old, &new, output.path(), 3)?;
+    crate::output::write_results(output.path(), &manifest, &summary)?;
+    output.commit()
+}
+
+/// Builds a direct comparison for two text files manually paired in the TUI.
+pub(crate) fn run_text_diff(
+    old_blob: &Path,
+    new_blob: &Path,
+    old_name: &str,
+    new_name: &str,
+    destination: &Path,
+) -> Result<()> {
+    fn artifact(blob: &Path, name: &str) -> Result<Artifact> {
+        let digest = sha_file(blob)?;
+        let size = std::fs::metadata(blob)?.len();
+        let entry = Entry {
+            path: name.to_owned(),
+            content: Content::File(blob.to_path_buf()),
+            digest: digest.clone(),
+            size,
+            kind: "text",
+        };
+        Ok(Artifact {
+            name: name.to_owned(),
+            digest,
+            entries: BTreeMap::from([(name.to_owned(), entry)]),
+            _workspace: None,
+        })
+    }
+
+    let old = artifact(old_blob, old_name)?;
+    let new = artifact(new_blob, new_name)?;
+    let output = crate::output::OutputTransaction::new(destination)?;
+    let (manifest, summary) =
+        compare_forced_pair(&old, &new, old_name, new_name, output.path(), 3)?;
     crate::output::write_results(output.path(), &manifest, &summary)?;
     output.commit()
 }

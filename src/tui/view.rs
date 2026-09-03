@@ -284,7 +284,7 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
     } else if app.showing_analysis() {
         " Enter analyzer details  q quit  wheel/PgUp/PgDn/J/K scroll  Tab view "
     } else {
-        " q quit  m mark unmatched  Enter analyze/details  Space folder  wheel/PgUp/PgDn scroll  Tab view "
+        " q quit  m mark unmatched  Enter compare/details  Space folder  wheel/PgUp/PgDn scroll  Tab view "
     };
     let text = app.error.as_deref().unwrap_or(default_text);
     let style = if app.error.is_some() {

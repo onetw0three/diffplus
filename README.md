@@ -431,7 +431,7 @@ The viewer loads selected content lazily and refuses individual payloads above
 | `2` | Toggle added entries |
 | `3` | Toggle deleted entries |
 | `4` | Toggle unchanged entries |
-| `m` | Mark or unmark one unmatched file for manual pairing |
+| `m` | Mark or unmark one unmatched text, JAR, or native file for manual pairing |
 
 Mouse clicks select files and toggle folders. The wheel scrolls the explorer or
 diff under the pointer. Drag the explorer/editor divider or the before/after
@@ -439,9 +439,10 @@ divider to resize panels. Editor headers show old/new paths and sizes.
 
 A changed JAR or native pair initially shows one consolidated diff on its parent
 entry. Press `Enter` to open the source-file or function child explorer and
-`Backspace` to return. To analyze unmatched files, select one side, press `m`,
+`Backspace` to return. To compare unmatched files, select one side, press `m`,
 move to the counterpart, and press `Enter`. A `◆` marks the first selection.
-Both files must use the same analyzer.
+Text files are compared directly; JAR and native pairs use JADX and
+IDA/Diaphora respectively. Both files must use the same comparison type.
 
 ## MCP server
 
