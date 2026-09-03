@@ -3,7 +3,7 @@
 use crate::cli::{Args, Color, JvmMode, NativeMode};
 use anyhow::{bail, Context, Result};
 use clap::{parser::ValueSource, ArgMatches};
-use serde::Deserialize;
+use serde::{de, Deserialize, Deserializer};
 use std::path::{Path, PathBuf};
 
 const APPLICATION_DIRECTORY: &str = "diffplus";
@@ -16,8 +16,8 @@ struct Config {
     output: Option<PathBuf>,
     color: Option<Color>,
     context: Option<usize>,
-    max_file_size: Option<u64>,
-    max_expanded_size: Option<u64>,
+    max_file_size: Option<SizeLimit>,
+    max_expanded_size: Option<SizeLimit>,
     max_depth: Option<usize>,
     jvm: Option<JvmMode>,
     jadx_path: Option<PathBuf>,
@@ -31,6 +31,48 @@ struct Config {
     python_path: Option<PathBuf>,
     strip_top_level: Option<bool>,
     quiet: Option<bool>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SizeLimit {
+    Bytes(u64),
+    Unlimited,
+}
+
+impl SizeLimit {
+    fn value(self) -> u64 {
+        match self {
+            Self::Bytes(value) => value,
+            Self::Unlimited => u64::MAX,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for SizeLimit {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Value {
+            Bytes(u64),
+            Enabled(bool),
+            Name(String),
+        }
+
+        match Value::deserialize(deserializer)? {
+            Value::Bytes(value) => Ok(Self::Bytes(value)),
+            Value::Enabled(false) => Ok(Self::Unlimited),
+            Value::Name(value) if value.eq_ignore_ascii_case("none") => Ok(Self::Unlimited),
+            Value::Enabled(true) => Err(de::Error::custom(
+                "size limit must be a byte count, false, or \"none\"",
+            )),
+            Value::Name(value) => Err(de::Error::custom(format!(
+                "unknown size limit {value:?}; expected a byte count, false, or \"none\""
+            ))),
+        }
+    }
 }
 
 pub(crate) fn merge(args: &mut Args, matches: &ArgMatches) -> Result<()> {
@@ -91,13 +133,22 @@ fn apply(args: &mut Args, matches: &ArgMatches, config: Config) {
             }
         };
     }
+    macro_rules! set_size_limit {
+        ($field:ident) => {
+            if !from_command_line(matches, stringify!($field)) {
+                if let Some(value) = config.$field {
+                    args.$field = value.value();
+                }
+            }
+        };
+    }
 
     set!(tui);
     set_path!(output);
     set!(color);
     set!(context);
-    set!(max_file_size);
-    set!(max_expanded_size);
+    set_size_limit!(max_file_size);
+    set_size_limit!(max_expanded_size);
     set!(max_depth);
     set!(jvm);
     set_path!(jadx_path);
@@ -187,5 +238,45 @@ quiet = true
     #[test]
     fn unknown_keys_are_rejected() {
         assert!(toml::from_str::<Config>("ida_paht = '/opt/ida/ida64'").is_err());
+    }
+
+    #[test]
+    fn size_limits_accept_bytes_false_or_none() {
+        let config: Config = toml::from_str(
+            r#"
+max_file_size = false
+max_expanded_size = "none"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.max_file_size, Some(SizeLimit::Unlimited));
+        assert_eq!(config.max_expanded_size, Some(SizeLimit::Unlimited));
+
+        let config: Config = toml::from_str("max_file_size = 4096").unwrap();
+        assert_eq!(config.max_file_size, Some(SizeLimit::Bytes(4096)));
+    }
+
+    #[test]
+    fn disabled_size_limits_are_applied_as_unlimited() {
+        let (mut args, matches) = parsed(&["diffplus", "old", "new"]);
+        let config: Config = toml::from_str(
+            r#"
+max_file_size = "NONE"
+max_expanded_size = false
+"#,
+        )
+        .unwrap();
+
+        apply(&mut args, &matches, config);
+
+        assert_eq!(args.max_file_size, u64::MAX);
+        assert_eq!(args.max_expanded_size, u64::MAX);
+    }
+
+    #[test]
+    fn invalid_size_limit_values_are_rejected() {
+        assert!(toml::from_str::<Config>("max_file_size = true").is_err());
+        assert!(toml::from_str::<Config>("max_file_size = 'unbounded'").is_err());
     }
 }

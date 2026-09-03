@@ -405,7 +405,8 @@ fn collect_decoded(
         return collect_tar(decoded, None, prefix, out, store, limits, depth, expanded);
     }
     let remaining = limits.max_expanded.saturating_sub(*expanded);
-    let entry = store.stage_reader(logical, decoded, remaining, None)?;
+    let member_limit = limits.max_file.min(remaining);
+    let entry = store.stage_reader(logical, decoded, member_limit, None)?;
     account_expanded(entry.size, limits.max_expanded, expanded, &entry.path)?;
     if archive_kind_entry(&entry)?.is_some() {
         let content = store.materialize(&entry)?;

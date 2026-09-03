@@ -147,6 +147,18 @@ Command-line arguments override configured values. Leading `~/` path
 components are expanded. Relative paths retain the same current-directory
 semantics as CLI paths. Unknown or misspelled keys are rejected.
 
+To disable either byte limit in the configuration file, set it to `false` or
+the string `"none"`:
+
+```toml
+max_file_size = false
+max_expanded_size = "none"
+```
+
+TOML does not define a bare `none` value, so the quotes are required for that
+form. Disabling these limits removes an important archive-bomb safeguard; use
+it only with trusted inputs and sufficient disk space.
+
 Use a different file or disable configuration entirely with:
 
 ```bash
@@ -323,6 +335,7 @@ Expansion is guarded by:
 - `--max-depth`: maximum archive expansion levels; minimum 1.
 
 The defaults are 64 MiB per file, 1 GiB total per input, and one level deep.
+Each byte limit can be disabled in the configuration as described above.
 These checks apply while streaming and protect against path traversal and
 common archive/ZIP-bomb behavior. The larger limits in the configuration
 example are suitable only when the input is trusted and the host has enough
