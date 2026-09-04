@@ -188,6 +188,65 @@ fn default_mode_retains_unmatched_native_binaries_for_manual_analysis() {
     }));
 }
 
+#[cfg(unix)]
+#[test]
+fn managed_pe_pair_uses_ilspy_instead_of_ida() {
+    use std::io::{Seek, SeekFrom, Write};
+    use std::os::unix::fs::PermissionsExt;
+
+    fn write_managed_pe(path: &std::path::Path, marker: u8) {
+        let mut file = fs::File::create(path).unwrap();
+        let mut dos = [0_u8; 0x40];
+        dos[..2].copy_from_slice(b"MZ");
+        dos[0x3c..].copy_from_slice(&0x80_u32.to_le_bytes());
+        file.write_all(&dos).unwrap();
+        file.seek(SeekFrom::Start(0x80)).unwrap();
+        let mut pe = [0_u8; 24];
+        pe[..4].copy_from_slice(b"PE\0\0");
+        pe[20..22].copy_from_slice(&224_u16.to_le_bytes());
+        file.write_all(&pe).unwrap();
+        let mut optional = [0_u8; 224];
+        optional[..2].copy_from_slice(&0x10b_u16.to_le_bytes());
+        optional[208..212].copy_from_slice(&0x2000_u32.to_le_bytes());
+        optional[212..216].copy_from_slice(&72_u32.to_le_bytes());
+        optional[223] = marker;
+        file.write_all(&optional).unwrap();
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let old = temp.path().join("old.dll");
+    let new = temp.path().join("new.dll");
+    write_managed_pe(&old, 1);
+    write_managed_pe(&new, 2);
+    let ilspy = temp.path().join("fake-ilspycmd");
+    fs::write(
+        &ilspy,
+        "#!/bin/sh\nwhile [ $# -gt 0 ]; do case \"$1\" in -o) out=$2; shift 2;; -p) shift;; *) input=$1; shift;; esac; done\nmkdir -p \"$out/Example\"\ncase \"$input\" in *old*) value=1;; *) value=2;; esac\nprintf 'class Value { int Get() => %s; }\\n' \"$value\" > \"$out/Example/Value.cs\"\n",
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&ilspy).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&ilspy, permissions).unwrap();
+    let output = temp.path().join("result");
+
+    Command::cargo_bin("diffplus")
+        .unwrap()
+        .args(["--dotnet", "ilspy", "--ilspy-path"])
+        .arg(&ilspy)
+        .arg("--output")
+        .arg(&output)
+        .arg(&old)
+        .arg(&new)
+        .assert()
+        .code(1)
+        .stderr(predicates::str::contains("starting ILSpy analysis"));
+
+    let diff = fs::read_to_string(output.join("diffs/Example/Value.cs.diff")).unwrap();
+    assert!(diff.contains("Get() => 1"));
+    assert!(diff.contains("Get() => 2"));
+    assert!(!output.join("native-functions.json").exists());
+}
+
 #[test]
 fn different_tars_scan_concurrently_and_render_range_backed_diff() {
     fn write_tar(path: &std::path::Path, content: &[u8]) {

@@ -12,6 +12,7 @@ agent-driven patch-diff workflows.
 - Produce deterministic unified diffs and a versioned JSON manifest.
 - Detect unique moves and versioned filename changes conservatively.
 - Decompile changed JARs with JADX, eagerly or on demand.
+- Decompile managed .NET PE assemblies to C# with ILSpy.
 - Match and compare native functions with IDA Pro, Hex-Rays, and Diaphora.
 - Browse results in a mouse-aware, resizable terminal interface.
 - Expose bounded comparison and result-reading tools through MCP.
@@ -34,6 +35,7 @@ Optional analyzers need:
 
 - JADX plus a 64-bit Java runtime for JVM source-level diffs. Java 17 or newer
   is recommended; upstream JADX documents Java 11 as its minimum.
+- ILSpy's `ilspycmd` for managed .NET `.dll` and `.exe` source-level diffs.
 - IDA Pro, an appropriate Hex-Rays decompiler, Diaphora, and Python 3 for
   native function-level diffs.
 
@@ -131,6 +133,9 @@ strip_top_level = false
 jvm = "raw"
 jadx_path = "/opt/jadx/bin/jadx"
 
+dotnet = "auto"
+ilspy_path = "ilspycmd"
+
 native = "auto"
 ida_path = "~/ida-pro-9.4/idat"
 diaphora_path = "~/diaphora"
@@ -219,6 +224,29 @@ diffplus old.jar new.jar \
 
 Generated source formatting and JADX metadata comments are normalized before
 diffing to reduce decompiler noise.
+
+## .NET / ILSpy setup
+
+Diffplus identifies managed PE files from the CLR header rather than their
+filename extension. Managed `.dll` and `.exe` pairs are sent to `ilspycmd` and
+compared as generated C#; they are never sent to IDA. Install the command-line
+tool with a compatible .NET SDK:
+
+```bash
+dotnet tool install --global ilspycmd
+ilspycmd --version
+```
+
+Diffplus searches `PATH` and `~/.dotnet/tools/ilspycmd`. Modes are:
+
+- `--dotnet auto` (default): use ILSpy when found, otherwise keep a raw binary
+  comparison.
+- `--dotnet ilspy`: require ILSpy and fail if it is unavailable.
+- `--dotnet raw` or `--dotnet off`: skip managed-code decompilation.
+
+Direct managed file pairs are decompiled eagerly. Assemblies inside containers
+are retained for on-demand ILSpy analysis in the TUI, avoiding a decompiler run
+for every archived binary.
 
 ## IDA Pro and Diaphora setup
 

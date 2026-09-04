@@ -1,6 +1,6 @@
 //! User configuration loading and command-line precedence.
 
-use crate::cli::{Args, Color, JvmMode, NativeMode};
+use crate::cli::{Args, Color, DotnetMode, JvmMode, NativeMode};
 use anyhow::{bail, Context, Result};
 use clap::{parser::ValueSource, ArgMatches};
 use serde::{de, Deserialize, Deserializer};
@@ -21,6 +21,8 @@ struct Config {
     max_depth: Option<usize>,
     jvm: Option<JvmMode>,
     jadx_path: Option<PathBuf>,
+    dotnet: Option<DotnetMode>,
+    ilspy_path: Option<PathBuf>,
     cache_dir: Option<PathBuf>,
     workspace_dir: Option<PathBuf>,
     no_cache: Option<bool>,
@@ -152,6 +154,8 @@ fn apply(args: &mut Args, matches: &ArgMatches, config: Config) {
     set!(max_depth);
     set!(jvm);
     set_path!(jadx_path);
+    set!(dotnet);
+    set_path!(ilspy_path);
     set_optional_path!(cache_dir);
     set_optional_path!(workspace_dir);
     set!(no_cache);

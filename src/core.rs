@@ -1,4 +1,4 @@
-use crate::cli::{Args, Color, JvmMode, NativeMode};
+use crate::cli::{Args, Color, DotnetMode, JvmMode, NativeMode};
 use crate::diff::{compare, compare_forced_pair, render_summary};
 use crate::model::*;
 use crate::scan::{
@@ -54,6 +54,12 @@ fn run_with_summary(args: Args, emit_summary: bool) -> Result<bool> {
     if let Some(workspace) = &args.workspace_dir {
         validate_workspace_path(workspace, old_path, new_path)?;
     }
+    if matches!(args.dotnet, DotnetMode::Ilspy) && !discover_ilspy(&args.ilspy_path).is_file() {
+        bail!(
+            "ILSpy executable not found: {} (install ilspycmd or set --ilspy-path)",
+            args.ilspy_path.display()
+        );
+    }
     if matches!(args.native, NativeMode::Ida) {
         let ida = args
             .ida_path
@@ -80,12 +86,29 @@ fn run_with_summary(args: Args, emit_summary: bool) -> Result<bool> {
             );
         }
     }
+    let old_dotnet = is_dotnet_file(old_path)?;
+    let new_dotnet = is_dotnet_file(new_path)?;
+    if old_dotnet && new_dotnet && !matches!(args.dotnet, DotnetMode::Raw | DotnetMode::Off) {
+        let ilspy = discover_ilspy(&args.ilspy_path);
+        if ilspy.is_file() {
+            if ilspy != args.ilspy_path {
+                crate::progress::info(format!("discovered ILSpy at {}", ilspy.display()));
+            }
+            return run_dotnet_comparison(&args, &ilspy, None, emit_summary);
+        }
+        if matches!(args.dotnet, DotnetMode::Ilspy) {
+            bail!("ILSpy executable not found: {}", args.ilspy_path.display());
+        }
+        crate::progress::info(
+            "managed .NET inputs detected, but ilspycmd is unavailable; comparing raw files",
+        );
+    }
     let native_config = args
         .ida_path
         .as_deref()
         .zip(args.diaphora_script.as_deref())
         .zip(args.diaphora_path.as_deref());
-    if is_native_file(old_path)? && is_native_file(new_path)? {
+    if !old_dotnet && !new_dotnet && is_native_file(old_path)? && is_native_file(new_path)? {
         if let Some(((ida, script), diaphora)) =
             native_config.filter(|_| !matches!(args.native, NativeMode::Raw | NativeMode::Off))
         {
@@ -338,6 +361,28 @@ fn discover_jadx(configured: &Path) -> PathBuf {
         .unwrap_or_else(|| configured.to_path_buf())
 }
 
+fn discover_ilspy(configured: &Path) -> PathBuf {
+    if configured.is_file() || configured.components().count() > 1 {
+        return configured.to_path_buf();
+    }
+    if let Some(path) = std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|directory| directory.join(configured))
+            .find(|candidate| candidate.is_file())
+    }) {
+        return path;
+    }
+    if configured == Path::new("ilspycmd") {
+        if let Some(home) = std::env::var_os("HOME") {
+            let candidate = PathBuf::from(home).join(".dotnet/tools/ilspycmd");
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+    }
+    configured.to_path_buf()
+}
+
 fn load_artifact_logged(
     label: &str,
     path: &Path,
@@ -366,6 +411,148 @@ fn hash_file_pair(old: &Path, new: &Path) -> Result<(String, String)> {
         });
     }
     Ok((sha_file(old)?, sha_file(new)?))
+}
+
+fn run_dotnet_comparison(
+    args: &Args,
+    ilspy: &Path,
+    names: Option<(&str, &str)>,
+    emit_summary: bool,
+) -> Result<bool> {
+    crate::progress::info("managed .NET inputs detected; starting ILSpy analysis");
+    let workspace = create_workspace(args.workspace_dir.as_deref(), "dotnet")?;
+    let store = ContentStore::new(workspace.path())?;
+    let old_digest = sha_file(args.old_input())?;
+    let new_digest = sha_file(args.new_input())?;
+    let old = decompile_dotnet_artifact(
+        args.old_input(),
+        names.map(|pair| pair.0),
+        &old_digest,
+        ilspy,
+        workspace.path().join("old"),
+        &store,
+        args.max_file_size,
+    )?;
+    let new = if old_digest == new_digest {
+        Artifact {
+            name: names.map(|pair| pair.1.to_owned()).unwrap_or_else(|| {
+                args.new_input()
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned()
+            }),
+            digest: new_digest,
+            entries: old.entries.clone(),
+            _workspace: None,
+        }
+    } else {
+        decompile_dotnet_artifact(
+            args.new_input(),
+            names.map(|pair| pair.1),
+            &new_digest,
+            ilspy,
+            workspace.path().join("new"),
+            &store,
+            args.max_file_size,
+        )?
+    };
+    let output = crate::output::OutputTransaction::new(&args.output)?;
+    let (manifest, summary) = compare(&old, &new, output.path(), args.context)?;
+    crate::output::write_results(output.path(), &manifest, &summary)?;
+    output.commit()?;
+    if emit_summary {
+        print_summary(&summary, args.color);
+    }
+    Ok(manifest.stats.added
+        + manifest.stats.deleted
+        + manifest.stats.modified
+        + manifest.stats.renamed
+        > 0)
+}
+
+fn decompile_dotnet_artifact(
+    input: &Path,
+    name: Option<&str>,
+    digest: &str,
+    ilspy: &Path,
+    output: PathBuf,
+    store: &ContentStore,
+    max_file: u64,
+) -> Result<Artifact> {
+    crate::progress::info(format!("running ILSpy for {}", input.display()));
+    crate::process::run(
+        Command::new(ilspy)
+            .arg("-p")
+            .arg("-o")
+            .arg(&output)
+            .arg(input),
+        "ILSpy",
+    )
+    .with_context(|| format!("decompiling managed assembly {}", input.display()))?;
+    let mut entries = BTreeMap::new();
+    collect_generated_files(&output, &mut entries, store, max_file, "cs")?;
+    if entries.is_empty() {
+        bail!("ILSpy produced no C# sources for {}", input.display());
+    }
+    Ok(Artifact {
+        name: name.map(str::to_owned).unwrap_or_else(|| {
+            input
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+        }),
+        digest: digest.to_owned(),
+        entries,
+        _workspace: None,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_dotnet_diff(
+    old_blob: &Path,
+    new_blob: &Path,
+    old_name: &str,
+    new_name: &str,
+    destination: &Path,
+    configured_ilspy: &Path,
+) -> Result<()> {
+    let ilspy = discover_ilspy(configured_ilspy);
+    if !ilspy.is_file() {
+        bail!("ILSpy executable not found: {}", configured_ilspy.display());
+    }
+    let args = Args {
+        config: None,
+        no_config: true,
+        mcp: false,
+        old: Some(old_blob.to_path_buf()),
+        new: Some(new_blob.to_path_buf()),
+        view: None,
+        tui: false,
+        output: destination.to_path_buf(),
+        color: Color::Never,
+        context: 3,
+        max_file_size: 256 * 1024 * 1024,
+        max_expanded_size: 2 * 1024 * 1024 * 1024,
+        max_depth: 1,
+        jvm: JvmMode::Raw,
+        jadx_path: PathBuf::from("jadx"),
+        dotnet: DotnetMode::Ilspy,
+        ilspy_path: ilspy.clone(),
+        cache_dir: None,
+        workspace_dir: None,
+        no_cache: true,
+        native: NativeMode::Raw,
+        ida_path: None,
+        diaphora_script: None,
+        diaphora_path: None,
+        python_path: PathBuf::from("python3"),
+        strip_top_level: false,
+        quiet: true,
+    };
+    run_dotnet_comparison(&args, &ilspy, Some((old_name, new_name)), false)?;
+    Ok(())
 }
 
 fn run_native_comparison(
@@ -533,6 +720,8 @@ pub(crate) fn run_native_diff(
         max_depth: 1,
         jvm: JvmMode::Raw,
         jadx_path: PathBuf::from("jadx"),
+        dotnet: DotnetMode::Raw,
+        ilspy_path: PathBuf::from("ilspycmd"),
         cache_dir: cache_dir.map(Path::to_path_buf),
         workspace_dir: None,
         no_cache,
@@ -562,6 +751,10 @@ fn is_native_file(path: &Path) -> Result<bool> {
     let mut magic = [0_u8; 4];
     let read = File::open(path)?.read(&mut magic)?;
     Ok(crate::classify::is_native_magic(&magic[..read]))
+}
+
+fn is_dotnet_file(path: &Path) -> Result<bool> {
+    Ok(path.is_file() && crate::classify::is_dotnet_pe(path)?)
 }
 
 fn sanitize_component(value: &str) -> String {
@@ -883,15 +1076,26 @@ fn collect_generated_sources(
     store: &ContentStore,
     max_file: u64,
 ) -> Result<()> {
-    collect_generated_sources_from(root, root, entries, store, max_file)
+    collect_generated_files(root, entries, store, max_file, "java")
 }
 
-fn collect_generated_sources_from(
+fn collect_generated_files(
+    root: &Path,
+    entries: &mut BTreeMap<String, Entry>,
+    store: &ContentStore,
+    max_file: u64,
+    extension: &str,
+) -> Result<()> {
+    collect_generated_files_from(root, root, entries, store, max_file, extension)
+}
+
+fn collect_generated_files_from(
     root: &Path,
     current: &Path,
     entries: &mut BTreeMap<String, Entry>,
     store: &ContentStore,
     max_file: u64,
+    extension: &str,
 ) -> Result<()> {
     if !current.is_dir() {
         return Ok(());
@@ -899,10 +1103,10 @@ fn collect_generated_sources_from(
     for item in std::fs::read_dir(current)? {
         let path = item?.path();
         if path.is_dir() {
-            collect_generated_sources_from(root, &path, entries, store, max_file)?;
+            collect_generated_files_from(root, &path, entries, store, max_file, extension)?;
             continue;
         }
-        if path.extension().and_then(|value| value.to_str()) != Some("java") {
+        if path.extension().and_then(|value| value.to_str()) != Some(extension) {
             continue;
         }
         if std::fs::metadata(&path)?.len() > max_file {
@@ -912,7 +1116,11 @@ fn collect_generated_sources_from(
             .strip_prefix(root)?
             .to_string_lossy()
             .replace('\\', "/");
-        let source = normalize_java(&std::fs::read_to_string(&path)?);
+        let source = if extension == "java" {
+            normalize_java(&std::fs::read_to_string(&path)?)
+        } else {
+            normalize_pseudocode(&std::fs::read_to_string(&path)?)
+        };
         let entry = store.stage_bytes(relative.clone(), source.as_bytes(), max_file)?;
         entries.insert(relative, entry);
     }

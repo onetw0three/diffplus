@@ -70,6 +70,7 @@ pub(super) struct TreeNode {
 pub(super) enum AnalyzerKind {
     Text,
     Jadx,
+    Ilspy,
     Ida,
 }
 
@@ -78,6 +79,7 @@ impl AnalyzerKind {
         match self {
             Self::Text => "Text",
             Self::Jadx => "JADX",
+            Self::Ilspy => "ILSpy",
             Self::Ida => "IDA/Diaphora",
         }
     }
@@ -86,6 +88,7 @@ impl AnalyzerKind {
         match self {
             Self::Text => "text",
             Self::Jadx => "jadx",
+            Self::Ilspy => "ilspy",
             Self::Ida => "ida",
         }
     }
@@ -948,6 +951,7 @@ fn analysis_output_path(
     let protocol = match kind {
         AnalyzerKind::Text => "text-tui-v1",
         AnalyzerKind::Jadx => "jadx-tui-v1",
+        AnalyzerKind::Ilspy => "ilspy-tui-v1",
         AnalyzerKind::Ida => "ida-tui-v1",
     };
     let key = crate::scan::sha(format!("{protocol}\n{old_digest}\n{new_digest}\n").as_bytes());
@@ -957,6 +961,9 @@ fn analysis_output_path(
 fn analyzer_kind(path: &str, blob: &Path) -> Result<Option<AnalyzerKind>> {
     if is_jar_path(path) {
         return Ok(Some(AnalyzerKind::Jadx));
+    }
+    if crate::classify::is_dotnet_pe(blob)? {
+        return Ok(Some(AnalyzerKind::Ilspy));
     }
     use std::io::Read;
     let mut magic = [0_u8; 4];

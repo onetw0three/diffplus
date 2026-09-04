@@ -48,6 +48,11 @@ pub struct Args {
     pub jvm: JvmMode,
     #[arg(long, default_value = "jadx")]
     pub jadx_path: PathBuf,
+    /// Decompile managed PE assemblies with ILSpy before comparing them.
+    #[arg(long, value_enum, default_value_t = DotnetMode::Auto)]
+    pub dotnet: DotnetMode,
+    #[arg(long, default_value = "ilspycmd")]
+    pub ilspy_path: PathBuf,
     #[arg(long)]
     pub cache_dir: Option<PathBuf>,
     /// Parent directory for ephemeral extracted-content workspaces.
@@ -108,6 +113,15 @@ pub enum Color {
 pub enum JvmMode {
     Auto,
     Jadx,
+    Raw,
+    Off,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, ValueEnum)]
+#[serde(rename_all = "snake_case")]
+pub enum DotnetMode {
+    Auto,
+    Ilspy,
     Raw,
     Off,
 }

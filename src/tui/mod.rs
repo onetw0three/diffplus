@@ -19,6 +19,7 @@ use std::{
 #[derive(Clone)]
 pub(crate) struct AnalyzerOptions {
     pub(crate) jadx_path: PathBuf,
+    pub(crate) ilspy_path: PathBuf,
     pub(crate) ida_path: Option<PathBuf>,
     pub(crate) diaphora_script: Option<PathBuf>,
     pub(crate) diaphora_path: Option<PathBuf>,
@@ -31,6 +32,7 @@ impl AnalyzerOptions {
     pub(crate) fn from_args(args: &crate::cli::Args) -> Self {
         Self {
             jadx_path: args.jadx_path.clone(),
+            ilspy_path: args.ilspy_path.clone(),
             ida_path: args.ida_path.clone(),
             diaphora_script: args.diaphora_script.clone(),
             diaphora_path: args.diaphora_path.clone(),
@@ -87,6 +89,14 @@ pub(crate) fn run(result: &Path, options: AnalyzerOptions) -> Result<()> {
                         &new_name,
                         &output,
                         &options.jadx_path,
+                    ),
+                    app::AnalyzerKind::Ilspy => crate::core::run_dotnet_diff(
+                        &old_blob,
+                        &new_blob,
+                        &old_name,
+                        &new_name,
+                        &output,
+                        &options.ilspy_path,
                     ),
                     app::AnalyzerKind::Ida => crate::core::run_native_diff(
                         &old_blob,
